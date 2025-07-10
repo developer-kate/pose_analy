@@ -28,21 +28,61 @@
             margin: 0 auto;
             padding: 20px;
             padding-bottom: 60px; /* 하단 패널 가림 방지 */
+            position: relative;
         }
-
+        .logo-absolute {
+            position: absolute;
+            top: 100;
+            left: 100;
+            z-index: 10;
+            width: 100px; /* 헤더 margin-left와 동일하게 */
+            height: 70px; /* 헤더 높이와 동일하게 */
+            display: flex;
+            align-items: stretch;
+            justify-content: flex-start;
+            background: none;
+        }
+        .logo-absolute img {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            background: none;
+        }
         .header {
             background: rgba(255, 255, 255, 0.95);
-            padding: 20px;
+            padding: 10px 24px;
             border-radius: 15px;
-            text-align: center;
+            text-align: left;
             margin-bottom: 20px;
             box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+            margin-left: 120px; /* 로고 공간만큼 왼쪽 여백 */
+            margin-top: 10px;
+            height: 70px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
         }
-
-        .header h1 {
+        .header-row {
+            display: flex;
+            align-items: center;
+            gap: 18px;
+        }
+        .logo img, .logo {
+            height: 40px;
+            width: 40px;
+            display: block;
+        }
+        .header-texts {
+            width: 100%;
+            text-align: center;
+        }
+        .header-texts h1 {
             color: #2c3e50;
-            font-size: 2rem;
-            margin-bottom: 10px;
+            font-size: 1.5rem;
+            margin-bottom: 2px;
+        }
+        .header-texts p {
+            font-size: 1rem;
         }
 
         .main-layout {
@@ -425,9 +465,14 @@
 </head>
 <body>
     <div class="container">
+        <div class="logo-absolute">
+            <img src="pic.png" alt="로고">
+        </div>
         <div class="header">
-            <h1>🤖 VLM 통합 공장 작업자 포즈 분석 시스템</h1>
-            <p>실시간 작업자 안전 모니터링 + AI 분석 보고서 + 시각적 데이터 분석</p>
+            <div class="header-texts">
+                <h1>VLM 통합 공장 작업자 포즈 분석 시스템</h1>
+                <p>실시간 작업자 안전 모니터링 + AI 분석 보고서 + 시각적 데이터 분석</p>
+            </div>
         </div>
 
         <div class="controls">
@@ -1407,7 +1452,8 @@
                 const now = new Date();
                 const timeStr = now.toLocaleTimeString();
                 const landmarksStr = this.lastLandmarks ? JSON.stringify(this.lastLandmarks) : '없음';
-                const prompt = `이 이미지는 작업자의 행동을 보여줍니다. 아래는 관절 좌표 데이터입니다: ${landmarksStr}`;
+                //const prompt = `이 이미지는 작업자의 행동을 보여줍니다. 아래는 관절 좌표 데이터입니다: ${landmarksStr}`;
+                const prompt = '이 영상을 이벤트별로 끊어서 설명해줘. 해당 이벤트가 발생하는 시간대도 함께 알려줘';   
                 try {
                     const result = await this.callGeminiVisionAPI(dataUrl, prompt);
                     this.eventTimeline.push({ time: timeStr, desc: result });
@@ -1471,7 +1517,8 @@
                     });
                 }
                 // Gemini Vision 멀티 이미지 프롬프트
-                const prompt = '아래는 동영상에서 추출한 여러 시점의 이미지입니다. 이 시퀀스를 보고, 주요 행동 이벤트를 시간대별로 끊어서 설명해줘. 각 이벤트의 시작~끝 시간도 함께 알려줘.';
+                //const prompt = '아래는 동영상에서 추출한 여러 시점의 이미지입니다. 이 시퀀스를 보고, 주요 행동 이벤트를 시간대별로 끊어서 설명해줘. 각 이벤트의 시작~끝 시간도 함께 알려줘.';
+                const prompt = '이 영상을 이벤트별로 끊어서 설명해줘. 해당 이벤트가 발생하는 시간대도 함께 알려줘';   
                 try {
                     const result = await this.callGeminiVisionMultiImage(frames, prompt);
                     // 결과를 줄 단위로 분리해서 타임라인에 여러 이벤트로 추가
@@ -1503,7 +1550,24 @@
                 });
                 const data = await res.json();
                 console.log('Gemini 응답:', data); // Console log
+                if (!data.candidates) {
+                    const errorMsg = data.error?.message || '분석 실패';
+                    this.eventTimeline = [{ time: new Date().toLocaleTimeString(), desc: errorMsg }];
+                    this.eventTimelinePanel.style.display = 'block';
+                    this.updateEventTimelineUI();
+                    return;
+                }
                 return data.candidates?.[0]?.content?.parts?.[0]?.text || '분석 실패';
+            }
+
+            resizeCanvas() {
+                // video와 canvas의 크기를 동기화
+                if (this.video && this.canvas) {
+                    this.canvas.width = this.video.videoWidth || this.video.width || this.canvas.width;
+                    this.canvas.height = this.video.videoHeight || this.video.height || this.canvas.height;
+                    this.canvas.style.width = '100%';
+                    this.canvas.style.height = '100%';
+                }
             }
         }
 
