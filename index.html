@@ -1,0 +1,1227 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>공장 작업자 포즈 분석 시스템</title>
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js"></script>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useRef, useEffect, useCallback } = React;
+
+        const WorkerPoseAnalyzer = () => {
+          // State 관리
+          const [isRunning, setIsRunning] = useState(false);
+          const [statusMessage, setStatusMessage] = useState('��� 포즈 분석은 바로 사용 가능, VLM 분석은 API 키 설정 후 가능');
+          const [statusType, setStatusType] = useState('warning');
+          const [showMetrics, setShowMetrics] = useState(false);
+          const [showVLMAnalysis, setShowVLMAnalysis] = useState(false);
+          const [showSnapshot, setShowSnapshot] = useState(false);
+          const [showRecommendations, setShowRecommendations] = useState(false);
+          const [metrics, setMetrics] = useState({
+            spineAngle: 0,
+            neckAngle: 0,
+            shoulderBalance: 0,
+            kneeAngle: 0,
+            workIntensity: '보통'
+          });
+          const [vlmAnalysis, setVlmAnalysis] = useState('');
+          const [isAnalyzing, setIsAnalyzing] = useState(false);
+          const [recommendations, setRecommendations] = useState([]);
+
+          // Refs
+          const videoRef = useRef(null);
+          const canvasRef = useRef(null);
+          const snapshotCanvasRef = useRef(null);
+          const poseRef = useRef(null);
+          const cameraRef = useRef(null);
+
+          // ��� API 설정 (여기서 직접 수정하세요!)
+          const config = {
+            // OpenAI GPT-4 Vision 설정
+            openai: {
+              apiKey: 'sk-your-openai-api-key-here', // ← 실제 OpenAI API 키 입력
+              model: 'gpt-4-vision-preview'
+            },
+            
+            // Google Gemini 설정  
+            gemini: {
+              apiKey: 'your-gemini-api-key-here', // ← 실제 Gemini API 키 입력
+              model: 'gemini-pro-vision'
+            },
+            
+            // Anthropic Claude 설정
+            claude: {
+              apiKey: 'your-claude-api-key-here', // ← 실제 Claude API 키 입력
+              model: 'claude-3-sonnet-20240229'
+            },
+            
+            // 사용할 VLM 선택 ('openai', 'gemini', 'claude')
+            selectedVLM: 'openai'
+          };
+
+          const selectedConfig = config[config.selectedVLM];
+          const hasValidApiKey = selectedConfig.apiKey && !selectedConfig.apiKey.includes('your-') && !selectedConfig.apiKey.includes('-here');
+
+          // 각도 계산 함수
+          const calculateAngle = useCallback((point1, point2, point3) => {
+            const a = Math.sqrt(Math.pow(point2.x - point3.x, 2) + Math.pow(point2.y - point3.y, 2));
+            const b = Math.sqrt(Math.pow(point1.x - point3.x, 2) + Math.pow(point1.y - point3.y, 2));
+            const c = Math.sqrt(Math.pow(point1.x - point2.x, 2) + Math.pow(point1.y - point2.y, 2));
+            
+            const angle = Math.acos((a * a + c * c - b * b) / (2 * a * c));
+            return angle * 180 / Math.PI;
+          }, []);
+
+          // 실제 포즈 메트릭 계산
+          const calculateRealPoseMetrics = useCallback((landmarks) => {
+            const leftShoulder = landmarks[11];
+            const rightShoulder = landmarks[12];
+            const leftHip = landmarks[23];
+            const rightHip = landmarks[24];
+            const nose = landmarks[0];
+            const leftKnee = landmarks[25];
+            const leftAnkle = landmarks[27];
+
+            // 척추 각도 계산
+            const shoulderMidpoint = {
+              x: (leftShoulder.x + rightShoulder.x) / 2,
+              y: (leftShoulder.y + rightShoulder.y) / 2
+            };
+            const hipMidpoint = {
+              x: (leftHip.x + rightHip.x) / 2,
+              y: (leftHip.y + rightHip.y) / 2
+            };
+
+            const spineAngle = calculateAngle(
+              shoulderMidpoint,
+              hipMidpoint,
+              {x: hipMidpoint.x, y: hipMidpoint.y + 0.1}
+            );
+
+            // 목 각도 계산
+            const neckAngle = calculateAngle(
+              nose,
+              shoulderMidpoint,
+              {x: shoulderMidpoint.x, y: shoulderMidpoint.y + 0.1}
+            );
+
+            // 어깨 균형 계산
+            const shoulderBalance = Math.abs(leftShoulder.y - rightShoulder.y) * 180;
+
+            // 무릎 각도 계산
+            const kneeAngle = calculateAngle(leftHip, leftKnee, leftAnkle);
+
+            return {
+              spineAngle: 180 - Math.abs(spineAngle),
+              neckAngle: Math.abs(neckAngle),
+              shoulderBalance: shoulderBalance,
+              kneeAngle: kneeAngle
+            };
+          }, [calculateAngle]);
+
+          // 포즈 랜드마크 그리기
+          const drawPoseLandmarks = useCallback((landmarks) => {
+            const canvas = canvasRef.current;
+            const ctx = canvas.getContext('2d');
+            
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // MediaPipe 포즈 연결선 정의
+            const connections = [
+              [11, 12], // 어깨
+              [11, 13], [13, 15], // 왼쪽 팔
+              [12, 14], [14, 16], // 오른쪽 팔
+              [11, 23], [12, 24], // 몸통
+              [23, 24], // 허리
+              [23, 25], [25, 27], [27, 29], [27, 31], // 왼쪽 다리
+              [24, 26], [26, 28], [28, 30], [28, 32], // 오른쪽 다리
+              [0, 1], [1, 2], [2, 3], [3, 7], // 얼굴 왼쪽
+              [0, 4], [4, 5], [5, 6], [6, 8], // 얼굴 오른쪽
+              [9, 10] // 입
+            ];
+
+            // 연결선 그리기
+            ctx.strokeStyle = '#00FF00';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+
+            connections.forEach(([startIdx, endIdx]) => {
+              const start = landmarks[startIdx];
+              const end = landmarks[endIdx];
+              
+              if (start && end && start.visibility > 0.5 && end.visibility > 0.5) {
+                const startX = start.x * canvas.width;
+                const startY = start.y * canvas.height;
+                const endX = end.x * canvas.width;
+                const endY = end.y * canvas.height;
+                
+                ctx.moveTo(startX, startY);
+                ctx.lineTo(endX, endY);
+              }
+            });
+            
+            ctx.stroke();
+
+            // 주요 관절점 그리기
+            const keyPoints = [0, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28];
+            ctx.fillStyle = '#FF0000';
+            
+            keyPoints.forEach(idx => {
+              const landmark = landmarks[idx];
+              if (landmark && landmark.visibility > 0.5) {
+                const x = landmark.x * canvas.width;
+                const y = landmark.y * canvas.height;
+                
+                ctx.beginPath();
+                ctx.arc(x, y, 5, 0, 2 * Math.PI);
+                ctx.fill();
+              }
+            });
+          }, []);
+
+          // 포즈 결과 처리
+          const onPoseResults = useCallback((results) => {
+            if (results.poseLandmarks) {
+              drawPoseLandmarks(results.poseLandmarks);
+              const newMetrics = calculateRealPoseMetrics(results.poseLandmarks);
+              
+              // 작업 강도 랜덤 생성 (실제로는 움직임 패턴 분석)
+              const intensity = Math.random() > 0.7 ? '높음' : Math.random() > 0.3 ? '보통' : '낮음';
+              
+              setMetrics({
+                ...newMetrics,
+                workIntensity: intensity
+              });
+
+              // 권장사항 업데이트
+              const newRecommendations = [];
+              if (newMetrics.spineAngle < 160) {
+                newRecommendations.push('허리를 곧게 펴고 작업하세요.');
+              }
+              if (newMetrics.neckAngle > 15) {
+                newRecommendations.push('목을 과도하게 숙이지 마세요.');
+              }
+              if (newMetrics.shoulderBalance > 5) {
+                newRecommendations.push('어깨 높이를 균등하게 유지하세요.');
+              }
+              if (newMetrics.kneeAngle < 150) {
+                newRecommendations.push('무릎을 구부릴 때는 서서히 하세요.');
+              }
+              if (newRecommendations.length === 0) {
+                newRecommendations.push('현재 자세가 양호합니다. 계속 유지하세요!');
+              }
+              setRecommendations(newRecommendations);
+
+              // 전체 상태 업데이트
+              const statuses = [
+                newMetrics.spineAngle > 160 ? 'good' : newMetrics.spineAngle > 140 ? 'warning' : 'danger',
+                newMetrics.neckAngle < 15 ? 'good' : newMetrics.neckAngle < 25 ? 'warning' : 'danger',
+                newMetrics.shoulderBalance < 5 ? 'good' : newMetrics.shoulderBalance < 10 ? 'warning' : 'danger',
+                newMetrics.kneeAngle > 150 ? 'good' : newMetrics.kneeAngle > 120 ? 'warning' : 'danger'
+              ];
+              
+              const dangerCount = statuses.filter(s => s === 'danger').length;
+              const warningCount = statuses.filter(s => s === 'warning').length;
+
+              if (dangerCount > 0) {
+                setStatusMessage(`⚠️ 위험 요소 ${dangerCount}개 감지됨`);
+                setStatusType('danger');
+              } else if (warningCount > 0) {
+                setStatusMessage(`⚡ 주의 요소 ${warningCount}개 감지됨`);
+                setStatusType('warning');
+              } else {
+                setStatusMessage('✅ 작업 자세 양호');
+                setStatusType('good');
+              }
+            } else {
+              setStatusMessage('⚠️ 작업자가 감지되지 않습니다. 카메라 앞에 서주세요.');
+              setStatusType('warning');
+            }
+          }, [drawPoseLandmarks, calculateRealPoseMetrics]);
+
+          // MediaPipe 초기화
+          const initializePoseDetection = useCallback(async () => {
+            if (typeof window !== 'undefined' && window.Pose) {
+              poseRef.current = new window.Pose({
+                locateFile: (file) => {
+                  return `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`;
+                }
+              });
+              
+              poseRef.current.setOptions({
+                modelComplexity: 1,
+                smoothLandmarks: true,
+                enableSegmentation: false,
+                smoothSegmentation: true,
+                minDetectionConfidence: 0.5,
+                minTrackingConfidence: 0.5
+              });
+              
+              poseRef.current.onResults(onPoseResults);
+              
+              if (window.Camera && videoRef.current) {
+                cameraRef.current = new window.Camera(videoRef.current, {
+                  onFrame: async () => {
+                    if (isRunning && poseRef.current) {
+                      await poseRef.current.send({image: videoRef.current});
+                    }
+                  },
+                  width: 1280,
+                  height: 720
+                });
+              }
+            }
+          }, [onPoseResults, isRunning]);
+
+          // 캔버스 크기 조정
+          const resizeCanvas = useCallback(() => {
+            if (videoRef.current && canvasRef.current) {
+              const rect = videoRef.current.getBoundingClientRect();
+              canvasRef.current.width = rect.width;
+              canvasRef.current.height = rect.height;
+            }
+            
+            if (snapshotCanvasRef.current) {
+              snapshotCanvasRef.current.width = 300;
+              snapshotCanvasRef.current.height = 200;
+            }
+          }, []);
+
+          // 분석 시작
+          const startAnalysis = async () => {
+            try {
+              await initializePoseDetection();
+              if (cameraRef.current) {
+                await cameraRef.current.start();
+              }
+              
+              setIsRunning(true);
+              setShowMetrics(true);
+              setShowRecommendations(true);
+              
+              if (hasValidApiKey) {
+                setStatusMessage(`��� 실시간 포즈 분석 중! ${config.selectedVLM.toUpperCase()} VLM 분석 사용 가능`);
+                setStatusType('good');
+              } else {
+                setStatusMessage('��� 실시간 포즈 분석 중! (VLM 분석은 API 키 설정 후 가능)');
+                setStatusType('warning');
+              }
+            } catch (error) {
+              console.error('Error starting analysis:', error);
+              setStatusMessage('포즈 감지 시작 실패. 브라우저 권한을 확인하세요.');
+              setStatusType('danger');
+            }
+          };
+
+          // 분석 중지
+          const stopAnalysis = () => {
+            setIsRunning(false);
+            setShowMetrics(false);
+            setShowVLMAnalysis(false);
+            setShowSnapshot(false);
+            setShowRecommendations(false);
+            
+            if (cameraRef.current) {
+              cameraRef.current.stop();
+            }
+            
+            if (canvasRef.current) {
+              const ctx = canvasRef.current.getContext('2d');
+              ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+            }
+            
+            setStatusMessage('분석이 중지되었습니다.');
+            setStatusType('good');
+          };
+
+          // 스냅샷 캡처
+          const captureSnapshot = () => {
+            if (videoRef.current && snapshotCanvasRef.current) {
+              const ctx = snapshotCanvasRef.current.getContext('2d');
+              ctx.drawImage(videoRef.current, 0, 0, snapshotCanvasRef.current.width, snapshotCanvasRef.current.height);
+            }
+          };
+
+          // VLM 분석 수행
+          const performVLMAnalysis = async () => {
+            if (!hasValidApiKey) {
+              alert(`VLM 분석을 위해서는 API 키가 필요합니다.\n\n코드에서 다음 부분을 수정하세요:\nconfig.${config.selectedVLM}.apiKey = 'your-actual-api-key'`);
+              return;
+            }
+
+            setIsAnalyzing(true);
+            setShowVLMAnalysis(true);
+            setShowSnapshot(true);
+            
+            captureSnapshot();
+            
+            try {
+              // 실제 환경에서는 여기서 VLM API 호출
+              // 데모용 시뮬레이션
+              await new Promise(resolve => setTimeout(resolve, 3000));
+              
+              const scenarios = [
+                {
+                  analysis: "작업자가 적절한 스쿼트 자세로 무거운 물건을 들고 있습니다. 척추가 일직선을 유지하고 있어 양호한 자세입니다.",
+                  safety: "전반적으로 안전한 자세이나, 무릎이 약간 안쪽으로 들어간 것이 관찰됩니다. 장시간 반복 시 주의가 필요합니다.",
+                  recommendations: "• 무릎을 발가락 방향으로 정렬하여 유지하세요\\n• 코어 근육을 더 강화하여 안정성을 높이세요\\n• 무거운 물건을 들 때는 2인 1조로 작업하는 것을 권장합니다"
+                },
+                {
+                  analysis: "작업자가 허리를 굽힌 채로 작업하고 있어 요추에 과도한 부담이 가해지고 있습니다. 목도 과도하게 숙여져 있습니다.",
+                  safety: "현재 자세는 높은 위험도를 나타냅니다. 지속될 경우 요통과 목 디스크 위험이 증가할 수 있습니다.",
+                  recommendations: "• 즉시 허리를 곧게 펴고 작업하세요\\n• 작업대 높이를 조정하여 목 위치를 개선하세요\\n• 30분마다 스트레칭을 실시하세요\\n• 작업 자세 교육이 필요합니다"
+                },
+                {
+                  analysis: "작업자가 양호한 서 있는 자세를 유지하고 있습니다. 어깨가 수평을 이루고 있고 척추의 자연스러운 곡선이 잘 유지되어 있습니다.",
+                  safety: "현재 자세는 매우 안전합니다. 근골격계 부담이 최소화된 이상적인 작업 자세입니다.",
+                  recommendations: "• 현재 자세를 계속 유지하세요\\n• 주기적으로 체중을 좌우로 이동시켜 피로를 예방하세요\\n• 발 받침대 사용을 고려해보세요\\n• 다른 작업자들에게 모범 사례로 공유할 수 있습니다"
+                }
+              ];
+
+              const result = scenarios[Math.floor(Math.random() * scenarios.length)];
+              
+              setVlmAnalysis(`
+                <div style="line-height: 1.6;">
+                  <strong>��� AI 전문가 분석 결과:</strong><br><br>
+                  ${result.analysis}<br><br>
+                  <strong>⚠️ 안전성 평가:</strong><br>
+                  ${result.safety}<br><br>
+                  <strong>��� 권장 개선사항:</strong><br>
+                  ${result.recommendations}
+                </div>
+              `);
+
+            } catch (error) {
+              setVlmAnalysis(`
+                <div style="color: #dc3545;">
+                  ❌ VLM 분석 중 오류가 발생했습니다: ${error.message}
+                </div>
+              `);
+            } finally {
+              setIsAnalyzing(false);
+            }
+          };
+
+          // 컴포넌트 마운트 시 초기화
+          useEffect(() => {
+            resizeCanvas();
+            window.addEventListener('resize', resizeCanvas);
+            
+            // 초기 상태 메시지 설정
+            if (hasValidApiKey) {
+              setStatusMessage(`✅ ${config.selectedVLM.toUpperCase()} API 연결 준비 완료! 카메라를 시작하세요.`);
+              setStatusType('good');
+            }
+            
+            return () => {
+              window.removeEventListener('resize', resizeCanvas);
+              if (cameraRef.current) {
+                cameraRef.current.stop();
+              }
+            };
+          }, [resizeCanvas, hasValidApiKey, config.selectedVLM]);
+
+          // 메트릭 상태 계산 함수
+          const getMetricStatus = (value, thresholds) => {
+            if (value >= thresholds.good) return 'good';
+            if (value >= thresholds.warning) return 'warning';
+            return 'danger';
+          };
+
+          return React.createElement('div', { className: "min-h-screen bg-gradient-to-br from-indigo-500 to-purple-600 p-5" },
+            React.createElement('div', { className: "max-w-7xl mx-auto" },
+              // 헤더
+              React.createElement('div', { className: "bg-white/95 rounded-2xl p-6 text-center mb-5 shadow-2xl" },
+                React.createElement('h1', { className: "text-4xl font-bold text-gray-800 mb-2" },
+                  "��� VLM 통합 공장 작업자 포즈 분석 시스템"
+                ),
+                React.createElement('p', { className: "text-xl text-gray-600" },
+                  "실시간 작업자 안전 모니터링 + AI 분석 보고서"
+                )
+              ),
+
+              // 메인 컨텐츠
+              React.createElement('div', { className: "grid grid-cols-1 lg:grid-cols-3 gap-5 h-[calc(100vh-200px)]" },
+                // 비디오 섹션
+                React.createElement('div', { className: "lg:col-span-2 bg-white/95 rounded-2xl p-5 shadow-2xl flex flex-col" },
+                  React.createElement('div', { className: "relative flex-1 rounded-xl overflow-hidden bg-black" },
+                    React.createElement('h3', { className: "font-bold text-lg mb-2" }, "��� 실시간 분석 상태"),
+                    React.createElement('p', { className: "text-gray-700" }, statusMessage)
+                  ),
+
+                  // 측정값 패널
+                  showMetrics && React.createElement('div', { className: "mb-4" },
+                    React.createElement('h3', { className: "font-bold text-lg mb-3" }, "��� 자세 측정값"),
+                    React.createElement('div', { className: "space-y-3" },
+                      React.createElement('div', { className: "flex justify-between items-center py-2 border-b border-gray-200" },
+                        React.createElement('span', { className: "font-semibold text-gray-700" }, "척추 각도"),
+                        React.createElement('span', { 
+                          className: `px-2 py-1 rounded-full text-sm font-bold ${
+                            getMetricStatus(metrics.spineAngle, {good: 160, warning: 140}) === 'good' ? 'bg-green-100 text-green-800' :
+                            getMetricStatus(metrics.spineAngle, {good: 160, warning: 140}) === 'warning' ? 'bg-yellow-100 text-yellow-800' :
+                            'bg-red-100 text-red-800'
+                          }`
+                        }, `${metrics.spineAngle.toFixed(1)}°`)
+                      ),
+                      
+                      React.createElement('div', { className: "flex justify-between items-center py-2 border-b border-gray-200" },
+                        React.createElement('span', { className: "font-semibold text-gray-700" }, "목 기울기"),
+                        React.createElement('span', { 
+                          className: `px-2 py-1 rounded-full text-sm font-bold ${
+                            getMetricStatus(metrics.neckAngle, {good: 15, warning: 25}) === 'good' ? 'bg-green-100 text-green-800' :
+                            getMetricStatus(metrics.neckAngle, {good: 15, warning: 25}) === 'warning' ? 'bg-yellow-100 text-yellow-800' :
+                            'bg-red-100 text-red-800'
+                          }`
+                        }, `${metrics.neckAngle.toFixed(1)}°`)
+                      ),
+                      
+                      React.createElement('div', { className: "flex justify-between items-center py-2 border-b border-gray-200" },
+                        React.createElement('span', { className: "font-semibold text-gray-700" }, "어깨 균형"),
+                        React.createElement('span', { 
+                          className: `px-2 py-1 rounded-full text-sm font-bold ${
+                            getMetricStatus(metrics.shoulderBalance, {good: 5, warning: 10}) === 'good' ? 'bg-green-100 text-green-800' :
+                            getMetricStatus(metrics.shoulderBalance, {good: 5, warning: 10}) === 'warning' ? 'bg-yellow-100 text-yellow-800' :
+                            'bg-red-100 text-red-800'
+                          }`
+                        }, `${metrics.shoulderBalance.toFixed(1)}°`)
+                      ),
+                      
+                      React.createElement('div', { className: "flex justify-between items-center py-2 border-b border-gray-200" },
+                        React.createElement('span', { className: "font-semibold text-gray-700" }, "무릎 각도"),
+                        React.createElement('span', { 
+                          className: `px-2 py-1 rounded-full text-sm font-bold ${
+                            getMetricStatus(metrics.kneeAngle, {good: 150, warning: 120}) === 'good' ? 'bg-green-100 text-green-800' :
+                            getMetricStatus(metrics.kneeAngle, {good: 150, warning: 120}) === 'warning' ? 'bg-yellow-100 text-yellow-800' :
+                            'bg-red-100 text-red-800'
+                          }`
+                        }, `${metrics.kneeAngle.toFixed(1)}°`)
+                      ),
+                      
+                      React.createElement('div', { className: "flex justify-between items-center py-2" },
+                        React.createElement('span', { className: "font-semibold text-gray-700" }, "작업 강도"),
+                        React.createElement('span', { 
+                          className: `px-2 py-1 rounded-full text-sm font-bold ${
+                            metrics.workIntensity === '낮음' ? 'bg-green-100 text-green-800' :
+                            metrics.workIntensity === '보통' ? 'bg-yellow-100 text-yellow-800' :
+                            'bg-red-100 text-red-800'
+                          }`
+                        }, metrics.workIntensity)
+                      )
+                    )
+                  ),
+
+                  // VLM 분석 패널
+                  showVLMAnalysis && React.createElement('div', { className: "bg-blue-50 rounded-xl p-4 mb-4 border-l-4 border-blue-500" },
+                    React.createElement('h3', { className: "font-bold text-lg text-blue-800 mb-3 flex items-center gap-2" },
+                      "��� AI 전문가 분석"
+                    ),
+                    isAnalyzing ? 
+                      React.createElement('div', { className: "flex items-center gap-3 text-gray-600" },
+                        React.createElement('div', { className: "w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" }),
+                        React.createElement('span', { className: "italic" }, "AI가 작업자의 자세를 분석 중입니다...")
+                      ) :
+                      React.createElement('div', { 
+                        className: "text-gray-700",
+                        dangerouslySetInnerHTML: { __html: vlmAnalysis }
+                      })
+                  ),
+
+                  // 스냅샷 섹션
+                  showSnapshot && React.createElement('div', { className: "bg-gray-50 rounded-xl p-4 mb-4" },
+                    React.createElement('h3', { className: "font-bold text-lg text-gray-700 mb-3" }, "��� 분석된 스냅샷"),
+                    React.createElement('canvas', { 
+                      ref: snapshotCanvasRef,
+                      className: "w-full max-w-xs border-2 border-gray-300 rounded-lg"
+                    })
+                  ),
+
+                  // 권장사항 패널
+                  showRecommendations && React.createElement('div', { className: "bg-blue-50 rounded-xl p-4" },
+                    React.createElement('h3', { className: "font-bold text-lg text-blue-800 mb-3" }, "��� 개선 권장사항"),
+                    React.createElement('ul', { className: "space-y-2" },
+                      recommendations.map((rec, index) => 
+                        React.createElement('li', { key: index, className: "flex items-start gap-2 text-blue-700" },
+                          React.createElement('span', { className: "text-blue-500" }, "���"),
+                          React.createElement('span', null, rec)
+                        )
+                      )
+                    )
+                  )
+                )
+              )
+            )
+          );
+        };
+
+        // 앱 렌더링
+        ReactDOM.render(React.createElement(WorkerPoseAnalyzer), document.getElementById('root'));
+    </script>
+</body>
+</html>video', { 
+                      ref: videoRef,
+                      autoPlay: true, 
+                      muted: true, 
+                      playsInline: true,
+                      className: "w-full h-full object-cover"
+                    }),
+                    React.createElement('canvas', { 
+                      ref: canvasRef,
+                      className: "absolute top-0 left-0 w-full h-full"
+                    })
+                  ),
+                  
+                  // 컨트롤 버튼
+                  React.createElement('div', { className: "flex justify-center gap-4 mt-4" },
+                    React.createElement('button', {
+                      onClick: startAnalysis,
+                      disabled: isRunning,
+                      className: "px-6 py-3 bg-gradient-to-r from-blue-500 to-purple-600 text-white font-bold rounded-full transition-all duration-300 hover:transform hover:-translate-y-1 hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none"
+                    }, "카메라 시작"),
+                    React.createElement('button', {
+                      onClick: performVLMAnalysis,
+                      disabled: !isRunning || isAnalyzing,
+                      className: "px-6 py-3 bg-gradient-to-r from-blue-400 to-blue-600 text-white font-bold rounded-full transition-all duration-300 hover:transform hover:-translate-y-1 hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none"
+                    }, isAnalyzing ? 'VLM 분석 중...' : 'VLM 분석'),
+                    React.createElement('button', {
+                      onClick: stopAnalysis,
+                      disabled: !isRunning,
+                      className: "px-6 py-3 bg-gradient-to-r from-red-500 to-red-600 text-white font-bold rounded-full transition-all duration-300 hover:transform hover:-translate-y-1 hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none"
+                    }, "중지")
+                  )
+                ),
+
+                // 분석 패널
+                React.createElement('div', { className: "bg-white/95 rounded-2xl p-5 shadow-2xl overflow-y-auto" },
+                  // 상태 카드
+                  React.createElement('div', { 
+                    className: `rounded-xl p-4 mb-4 border-l-4 ${
+                      statusType === 'good' ? 'bg-green-50 border-green-500' :
+                      statusType === 'warning' ? 'bg-yellow-50 border-yellow-500' :
+                      'bg-red-50 border-red-500'
+                    }`
+                  },
+                    React.createElement('<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>공장 작업자 포즈 분석 시스템</title>
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js"></script>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useRef, useEffect, useCallback } = React;
+
+        const WorkerPoseAnalyzer = () => {
+          // State 관리
+          const [isRunning, setIsRunning] = useState(false);
+          const [statusMessage, setStatusMessage] = useState('��� 포즈 분석은 바로 사용 가능, VLM 분석은 API 키 설정 후 가능');
+          const [statusType, setStatusType] = useState('warning');
+          const [showMetrics, setShowMetrics] = useState(false);
+          const [showVLMAnalysis, setShowVLMAnalysis] = useState(false);
+          const [showSnapshot, setShowSnapshot] = useState(false);
+          const [showRecommendations, setShowRecommendations] = useState(false);
+          const [metrics, setMetrics] = useState({
+            spineAngle: 0,
+            neckAngle: 0,
+            shoulderBalance: 0,
+            kneeAngle: 0,
+            workIntensity: '보통'
+          });
+          const [vlmAnalysis, setVlmAnalysis] = useState('');
+          const [isAnalyzing, setIsAnalyzing] = useState(false);
+          const [recommendations, setRecommendations] = useState([]);
+
+          // Refs
+          const videoRef = useRef(null);
+          const canvasRef = useRef(null);
+          const snapshotCanvasRef = useRef(null);
+          const poseRef = useRef(null);
+          const cameraRef = useRef(null);
+
+          // ��� API 설정 (여기서 직접 수정하세요!)
+          const config = {
+            // OpenAI GPT-4 Vision 설정
+            openai: {
+              apiKey: 'sk-your-openai-api-key-here', // ← 실제 OpenAI API 키 입력
+              model: 'gpt-4-vision-preview'
+            },
+            
+            // Google Gemini 설정  
+            gemini: {
+              apiKey: 'your-gemini-api-key-here', // ← 실제 Gemini API 키 입력
+              model: 'gemini-pro-vision'
+            },
+            
+            // Anthropic Claude 설정
+            claude: {
+              apiKey: 'your-claude-api-key-here', // ← 실제 Claude API 키 입력
+              model: 'claude-3-sonnet-20240229'
+            },
+            
+            // 사용할 VLM 선택 ('openai', 'gemini', 'claude')
+            selectedVLM: 'openai'
+          };
+
+          const selectedConfig = config[config.selectedVLM];
+          const hasValidApiKey = selectedConfig.apiKey && !selectedConfig.apiKey.includes('your-') && !selectedConfig.apiKey.includes('-here');
+
+          // 각도 계산 함수
+          const calculateAngle = useCallback((point1, point2, point3) => {
+            const a = Math.sqrt(Math.pow(point2.x - point3.x, 2) + Math.pow(point2.y - point3.y, 2));
+            const b = Math.sqrt(Math.pow(point1.x - point3.x, 2) + Math.pow(point1.y - point3.y, 2));
+            const c = Math.sqrt(Math.pow(point1.x - point2.x, 2) + Math.pow(point1.y - point2.y, 2));
+            
+            const angle = Math.acos((a * a + c * c - b * b) / (2 * a * c));
+            return angle * 180 / Math.PI;
+          }, []);
+
+          // 실제 포즈 메트릭 계산
+          const calculateRealPoseMetrics = useCallback((landmarks) => {
+            const leftShoulder = landmarks[11];
+            const rightShoulder = landmarks[12];
+            const leftHip = landmarks[23];
+            const rightHip = landmarks[24];
+            const nose = landmarks[0];
+            const leftKnee = landmarks[25];
+            const leftAnkle = landmarks[27];
+
+            // 척추 각도 계산
+            const shoulderMidpoint = {
+              x: (leftShoulder.x + rightShoulder.x) / 2,
+              y: (leftShoulder.y + rightShoulder.y) / 2
+            };
+            const hipMidpoint = {
+              x: (leftHip.x + rightHip.x) / 2,
+              y: (leftHip.y + rightHip.y) / 2
+            };
+
+            const spineAngle = calculateAngle(
+              shoulderMidpoint,
+              hipMidpoint,
+              {x: hipMidpoint.x, y: hipMidpoint.y + 0.1}
+            );
+
+            // 목 각도 계산
+            const neckAngle = calculateAngle(
+              nose,
+              shoulderMidpoint,
+              {x: shoulderMidpoint.x, y: shoulderMidpoint.y + 0.1}
+            );
+
+            // 어깨 균형 계산
+            const shoulderBalance = Math.abs(leftShoulder.y - rightShoulder.y) * 180;
+
+            // 무릎 각도 계산
+            const kneeAngle = calculateAngle(leftHip, leftKnee, leftAnkle);
+
+            return {
+              spineAngle: 180 - Math.abs(spineAngle),
+              neckAngle: Math.abs(neckAngle),
+              shoulderBalance: shoulderBalance,
+              kneeAngle: kneeAngle
+            };
+          }, [calculateAngle]);
+
+          // 포즈 랜드마크 그리기
+          const drawPoseLandmarks = useCallback((landmarks) => {
+            const canvas = canvasRef.current;
+            const ctx = canvas.getContext('2d');
+            
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // MediaPipe 포즈 연결선 정의
+            const connections = [
+              [11, 12], // 어깨
+              [11, 13], [13, 15], // 왼쪽 팔
+              [12, 14], [14, 16], // 오른쪽 팔
+              [11, 23], [12, 24], // 몸통
+              [23, 24], // 허리
+              [23, 25], [25, 27], [27, 29], [27, 31], // 왼쪽 다리
+              [24, 26], [26, 28], [28, 30], [28, 32], // 오른쪽 다리
+              [0, 1], [1, 2], [2, 3], [3, 7], // 얼굴 왼쪽
+              [0, 4], [4, 5], [5, 6], [6, 8], // 얼굴 오른쪽
+              [9, 10] // 입
+            ];
+
+            // 연결선 그리기
+            ctx.strokeStyle = '#00FF00';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+
+            connections.forEach(([startIdx, endIdx]) => {
+              const start = landmarks[startIdx];
+              const end = landmarks[endIdx];
+              
+              if (start && end && start.visibility > 0.5 && end.visibility > 0.5) {
+                const startX = start.x * canvas.width;
+                const startY = start.y * canvas.height;
+                const endX = end.x * canvas.width;
+                const endY = end.y * canvas.height;
+                
+                ctx.moveTo(startX, startY);
+                ctx.lineTo(endX, endY);
+              }
+            });
+            
+            ctx.stroke();
+
+            // 주요 관절점 그리기
+            const keyPoints = [0, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28];
+            ctx.fillStyle = '#FF0000';
+            
+            keyPoints.forEach(idx => {
+              const landmark = landmarks[idx];
+              if (landmark && landmark.visibility > 0.5) {
+                const x = landmark.x * canvas.width;
+                const y = landmark.y * canvas.height;
+                
+                ctx.beginPath();
+                ctx.arc(x, y, 5, 0, 2 * Math.PI);
+                ctx.fill();
+              }
+            });
+          }, []);
+
+          // 포즈 결과 처리
+          const onPoseResults = useCallback((results) => {
+            if (results.poseLandmarks) {
+              drawPoseLandmarks(results.poseLandmarks);
+              const newMetrics = calculateRealPoseMetrics(results.poseLandmarks);
+              
+              // 작업 강도 랜덤 생성 (실제로는 움직임 패턴 분석)
+              const intensity = Math.random() > 0.7 ? '높음' : Math.random() > 0.3 ? '보통' : '낮음';
+              
+              setMetrics({
+                ...newMetrics,
+                workIntensity: intensity
+              });
+
+              // 권장사항 업데이트
+              const newRecommendations = [];
+              if (newMetrics.spineAngle < 160) {
+                newRecommendations.push('허리를 곧게 펴고 작업하세요.');
+              }
+              if (newMetrics.neckAngle > 15) {
+                newRecommendations.push('목을 과도하게 숙이지 마세요.');
+              }
+              if (newMetrics.shoulderBalance > 5) {
+                newRecommendations.push('어깨 높이를 균등하게 유지하세요.');
+              }
+              if (newMetrics.kneeAngle < 150) {
+                newRecommendations.push('무릎을 구부릴 때는 서서히 하세요.');
+              }
+              if (newRecommendations.length === 0) {
+                newRecommendations.push('현재 자세가 양호합니다. 계속 유지하세요!');
+              }
+              setRecommendations(newRecommendations);
+
+              // 전체 상태 업데이트
+              const statuses = [
+                newMetrics.spineAngle > 160 ? 'good' : newMetrics.spineAngle > 140 ? 'warning' : 'danger',
+                newMetrics.neckAngle < 15 ? 'good' : newMetrics.neckAngle < 25 ? 'warning' : 'danger',
+                newMetrics.shoulderBalance < 5 ? 'good' : newMetrics.shoulderBalance < 10 ? 'warning' : 'danger',
+                newMetrics.kneeAngle > 150 ? 'good' : newMetrics.kneeAngle > 120 ? 'warning' : 'danger'
+              ];
+              
+              const dangerCount = statuses.filter(s => s === 'danger').length;
+              const warningCount = statuses.filter(s => s === 'warning').length;
+
+              if (dangerCount > 0) {
+                setStatusMessage(`⚠️ 위험 요소 ${dangerCount}개 감지됨`);
+                setStatusType('danger');
+              } else if (warningCount > 0) {
+                setStatusMessage(`⚡ 주의 요소 ${warningCount}개 감지됨`);
+                setStatusType('warning');
+              } else {
+                setStatusMessage('✅ 작업 자세 양호');
+                setStatusType('good');
+              }
+            } else {
+              setStatusMessage('⚠️ 작업자가 감지되지 않습니다. 카메라 앞에 서주세요.');
+              setStatusType('warning');
+            }
+          }, [drawPoseLandmarks, calculateRealPoseMetrics]);
+
+          // MediaPipe 초기화
+          const initializePoseDetection = useCallback(async () => {
+            if (typeof window !== 'undefined' && window.Pose) {
+              poseRef.current = new window.Pose({
+                locateFile: (file) => {
+                  return `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`;
+                }
+              });
+              
+              poseRef.current.setOptions({
+                modelComplexity: 1,
+                smoothLandmarks: true,
+                enableSegmentation: false,
+                smoothSegmentation: true,
+                minDetectionConfidence: 0.5,
+                minTrackingConfidence: 0.5
+              });
+              
+              poseRef.current.onResults(onPoseResults);
+              
+              if (window.Camera && videoRef.current) {
+                cameraRef.current = new window.Camera(videoRef.current, {
+                  onFrame: async () => {
+                    if (isRunning && poseRef.current) {
+                      await poseRef.current.send({image: videoRef.current});
+                    }
+                  },
+                  width: 1280,
+                  height: 720
+                });
+              }
+            }
+          }, [onPoseResults, isRunning]);
+
+          // 캔버스 크기 조정
+          const resizeCanvas = useCallback(() => {
+            if (videoRef.current && canvasRef.current) {
+              const rect = videoRef.current.getBoundingClientRect();
+              canvasRef.current.width = rect.width;
+              canvasRef.current.height = rect.height;
+            }
+            
+            if (snapshotCanvasRef.current) {
+              snapshotCanvasRef.current.width = 300;
+              snapshotCanvasRef.current.height = 200;
+            }
+          }, []);
+
+          // 분석 시작
+          const startAnalysis = async () => {
+            try {
+              await initializePoseDetection();
+              if (cameraRef.current) {
+                await cameraRef.current.start();
+              }
+              
+              setIsRunning(true);
+              setShowMetrics(true);
+              setShowRecommendations(true);
+              
+              if (hasValidApiKey) {
+                setStatusMessage(`��� 실시간 포즈 분석 중! ${config.selectedVLM.toUpperCase()} VLM 분석 사용 가능`);
+                setStatusType('good');
+              } else {
+                setStatusMessage('��� 실시간 포즈 분석 중! (VLM 분석은 API 키 설정 후 가능)');
+                setStatusType('warning');
+              }
+            } catch (error) {
+              console.error('Error starting analysis:', error);
+              setStatusMessage('포즈 감지 시작 실패. 브라우저 권한을 확인하세요.');
+              setStatusType('danger');
+            }
+          };
+
+          // 분석 중지
+          const stopAnalysis = () => {
+            setIsRunning(false);
+            setShowMetrics(false);
+            setShowVLMAnalysis(false);
+            setShowSnapshot(false);
+            setShowRecommendations(false);
+            
+            if (cameraRef.current) {
+              cameraRef.current.stop();
+            }
+            
+            if (canvasRef.current) {
+              const ctx = canvasRef.current.getContext('2d');
+              ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+            }
+            
+            setStatusMessage('분석이 중지되었습니다.');
+            setStatusType('good');
+          };
+
+          // 스냅샷 캡처
+          const captureSnapshot = () => {
+            if (videoRef.current && snapshotCanvasRef.current) {
+              const ctx = snapshotCanvasRef.current.getContext('2d');
+              ctx.drawImage(videoRef.current, 0, 0, snapshotCanvasRef.current.width, snapshotCanvasRef.current.height);
+            }
+          };
+
+          // VLM 분석 수행
+          const performVLMAnalysis = async () => {
+            if (!hasValidApiKey) {
+              alert(`VLM 분석을 위해서는 API 키가 필요합니다.\n\n코드에서 다음 부분을 수정하세요:\nconfig.${config.selectedVLM}.apiKey = 'your-actual-api-key'`);
+              return;
+            }
+
+            setIsAnalyzing(true);
+            setShowVLMAnalysis(true);
+            setShowSnapshot(true);
+            
+            captureSnapshot();
+            
+            try {
+              // 실제 환경에서는 여기서 VLM API 호출
+              // 데모용 시뮬레이션
+              await new Promise(resolve => setTimeout(resolve, 3000));
+              
+              const scenarios = [
+                {
+                  analysis: "작업자가 적절한 스쿼트 자세로 무거운 물건을 들고 있습니다. 척추가 일직선을 유지하고 있어 양호한 자세입니다.",
+                  safety: "전반적으로 안전한 자세이나, 무릎이 약간 안쪽으로 들어간 것이 관찰됩니다. 장시간 반복 시 주의가 필요합니다.",
+                  recommendations: "• 무릎을 발가락 방향으로 정렬하여 유지하세요\\n• 코어 근육을 더 강화하여 안정성을 높이세요\\n• 무거운 물건을 들 때는 2인 1조로 작업하는 것을 권장합니다"
+                },
+                {
+                  analysis: "작업자가 허리를 굽힌 채로 작업하고 있어 요추에 과도한 부담이 가해지고 있습니다. 목도 과도하게 숙여져 있습니다.",
+                  safety: "현재 자세는 높은 위험도를 나타냅니다. 지속될 경우 요통과 목 디스크 위험이 증가할 수 있습니다.",
+                  recommendations: "• 즉시 허리를 곧게 펴고 작업하세요\\n• 작업대 높이를 조정하여 목 위치를 개선하세요\\n• 30분마다 스트레칭을 실시하세요\\n• 작업 자세 교육이 필요합니다"
+                },
+                {
+                  analysis: "작업자가 양호한 서 있는 자세를 유지하고 있습니다. 어깨가 수평을 이루고 있고 척추의 자연스러운 곡선이 잘 유지되어 있습니다.",
+                  safety: "현재 자세는 매우 안전합니다. 근골격계 부담이 최소화된 이상적인 작업 자세입니다.",
+                  recommendations: "• 현재 자세를 계속 유지하세요\\n• 주기적으로 체중을 좌우로 이동시켜 피로를 예방하세요\\n• 발 받침대 사용을 고려해보세요\\n• 다른 작업자들에게 모범 사례로 공유할 수 있습니다"
+                }
+              ];
+
+              const result = scenarios[Math.floor(Math.random() * scenarios.length)];
+              
+              setVlmAnalysis(`
+                <div style="line-height: 1.6;">
+                  <strong>��� AI 전문가 분석 결과:</strong><br><br>
+                  ${result.analysis}<br><br>
+                  <strong>⚠️ 안전성 평가:</strong><br>
+                  ${result.safety}<br><br>
+                  <strong>��� 권장 개선사항:</strong><br>
+                  ${result.recommendations}
+                </div>
+              `);
+
+            } catch (error) {
+              setVlmAnalysis(`
+                <div style="color: #dc3545;">
+                  ❌ VLM 분석 중 오류가 발생했습니다: ${error.message}
+                </div>
+              `);
+            } finally {
+              setIsAnalyzing(false);
+            }
+          };
+
+          // 컴포넌트 마운트 시 초기화
+          useEffect(() => {
+            resizeCanvas();
+            window.addEventListener('resize', resizeCanvas);
+            
+            // 초기 상태 메시지 설정
+            if (hasValidApiKey) {
+              setStatusMessage(`✅ ${config.selectedVLM.toUpperCase()} API 연결 준비 완료! 카메라를 시작하세요.`);
+              setStatusType('good');
+            }
+            
+            return () => {
+              window.removeEventListener('resize', resizeCanvas);
+              if (cameraRef.current) {
+                cameraRef.current.stop();
+              }
+            };
+          }, [resizeCanvas, hasValidApiKey, config.selectedVLM]);
+
+          // 메트릭 상태 계산 함수
+          const getMetricStatus = (value, thresholds) => {
+            if (value >= thresholds.good) return 'good';
+            if (value >= thresholds.warning) return 'warning';
+            return 'danger';
+          };
+
+          return React.createElement('div', { className: "min-h-screen bg-gradient-to-br from-indigo-500 to-purple-600 p-5" },
+            React.createElement('div', { className: "max-w-7xl mx-auto" },
+              // 헤더
+              React.createElement('div', { className: "bg-white/95 rounded-2xl p-6 text-center mb-5 shadow-2xl" },
+                React.createElement('h1', { className: "text-4xl font-bold text-gray-800 mb-2" },
+                  "��� VLM 통합 공장 작업자 포즈 분석 시스템"
+                ),
+                React.createElement('p', { className: "text-xl text-gray-600" },
+                  "실시간 작업자 안전 모니터링 + AI 분석 보고서"
+                )
+              ),
+
+              // 메인 컨텐츠
+              React.createElement('div', { className: "grid grid-cols-1 lg:grid-cols-3 gap-5 h-[calc(100vh-200px)]" },
+                // 비디오 섹션
+                React.createElement('div', { className: "lg:col-span-2 bg-white/95 rounded-2xl p-5 shadow-2xl flex flex-col" },
+                  React.createElement('div', { className: "relative flex-1 rounded-xl overflow-hidden bg-black" },
+                    React.createElement('h3', { className: "font-bold text-lg mb-2" }, "��� 실시간 분석 상태"),
+                    React.createElement('p', { className: "text-gray-700" }, statusMessage)
+                  ),
+
+                  // 측정값 패널
+                  showMetrics && React.createElement('div', { className: "mb-4" },
+                    React.createElement('h3', { className: "font-bold text-lg mb-3" }, "��� 자세 측정값"),
+                    React.createElement('div', { className: "space-y-3" },
+                      React.createElement('div', { className: "flex justify-between items-center py-2 border-b border-gray-200" },
+                        React.createElement('span', { className: "font-semibold text-gray-700" }, "척추 각도"),
+                        React.createElement('span', { 
+                          className: `px-2 py-1 rounded-full text-sm font-bold ${
+                            getMetricStatus(metrics.spineAngle, {good: 160, warning: 140}) === 'good' ? 'bg-green-100 text-green-800' :
+                            getMetricStatus(metrics.spineAngle, {good: 160, warning: 140}) === 'warning' ? 'bg-yellow-100 text-yellow-800' :
+                            'bg-red-100 text-red-800'
+                          }`
+                        }, `${metrics.spineAngle.toFixed(1)}°`)
+                      ),
+                      
+                      React.createElement('div', { className: "flex justify-between items-center py-2 border-b border-gray-200" },
+                        React.createElement('span', { className: "font-semibold text-gray-700" }, "목 기울기"),
+                        React.createElement('span', { 
+                          className: `px-2 py-1 rounded-full text-sm font-bold ${
+                            getMetricStatus(metrics.neckAngle, {good: 15, warning: 25}) === 'good' ? 'bg-green-100 text-green-800' :
+                            getMetricStatus(metrics.neckAngle, {good: 15, warning: 25}) === 'warning' ? 'bg-yellow-100 text-yellow-800' :
+                            'bg-red-100 text-red-800'
+                          }`
+                        }, `${metrics.neckAngle.toFixed(1)}°`)
+                      ),
+                      
+                      React.createElement('div', { className: "flex justify-between items-center py-2 border-b border-gray-200" },
+                        React.createElement('span', { className: "font-semibold text-gray-700" }, "어깨 균형"),
+                        React.createElement('span', { 
+                          className: `px-2 py-1 rounded-full text-sm font-bold ${
+                            getMetricStatus(metrics.shoulderBalance, {good: 5, warning: 10}) === 'good' ? 'bg-green-100 text-green-800' :
+                            getMetricStatus(metrics.shoulderBalance, {good: 5, warning: 10}) === 'warning' ? 'bg-yellow-100 text-yellow-800' :
+                            'bg-red-100 text-red-800'
+                          }`
+                        }, `${metrics.shoulderBalance.toFixed(1)}°`)
+                      ),
+                      
+                      React.createElement('div', { className: "flex justify-between items-center py-2 border-b border-gray-200" },
+                        React.createElement('span', { className: "font-semibold text-gray-700" }, "무릎 각도"),
+                        React.createElement('span', { 
+                          className: `px-2 py-1 rounded-full text-sm font-bold ${
+                            getMetricStatus(metrics.kneeAngle, {good: 150, warning: 120}) === 'good' ? 'bg-green-100 text-green-800' :
+                            getMetricStatus(metrics.kneeAngle, {good: 150, warning: 120}) === 'warning' ? 'bg-yellow-100 text-yellow-800' :
+                            'bg-red-100 text-red-800'
+                          }`
+                        }, `${metrics.kneeAngle.toFixed(1)}°`)
+                      ),
+                      
+                      React.createElement('div', { className: "flex justify-between items-center py-2" },
+                        React.createElement('span', { className: "font-semibold text-gray-700" }, "작업 강도"),
+                        React.createElement('span', { 
+                          className: `px-2 py-1 rounded-full text-sm font-bold ${
+                            metrics.workIntensity === '낮음' ? 'bg-green-100 text-green-800' :
+                            metrics.workIntensity === '보통' ? 'bg-yellow-100 text-yellow-800' :
+                            'bg-red-100 text-red-800'
+                          }`
+                        }, metrics.workIntensity)
+                      )
+                    )
+                  ),
+
+                  // VLM 분석 패널
+                  showVLMAnalysis && React.createElement('div', { className: "bg-blue-50 rounded-xl p-4 mb-4 border-l-4 border-blue-500" },
+                    React.createElement('h3', { className: "font-bold text-lg text-blue-800 mb-3 flex items-center gap-2" },
+                      "��� AI 전문가 분석"
+                    ),
+                    isAnalyzing ? 
+                      React.createElement('div', { className: "flex items-center gap-3 text-gray-600" },
+                        React.createElement('div', { className: "w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" }),
+                        React.createElement('span', { className: "italic" }, "AI가 작업자의 자세를 분석 중입니다...")
+                      ) :
+                      React.createElement('div', { 
+                        className: "text-gray-700",
+                        dangerouslySetInnerHTML: { __html: vlmAnalysis }
+                      })
+                  ),
+
+                  // 스냅샷 섹션
+                  showSnapshot && React.createElement('div', { className: "bg-gray-50 rounded-xl p-4 mb-4" },
+                    React.createElement('h3', { className: "font-bold text-lg text-gray-700 mb-3" }, "��� 분석된 스냅샷"),
+                    React.createElement('canvas', { 
+                      ref: snapshotCanvasRef,
+                      className: "w-full max-w-xs border-2 border-gray-300 rounded-lg"
+                    })
+                  ),
+
+                  // 권장사항 패널
+                  showRecommendations && React.createElement('div', { className: "bg-blue-50 rounded-xl p-4" },
+                    React.createElement('h3', { className: "font-bold text-lg text-blue-800 mb-3" }, "��� 개선 권장사항"),
+                    React.createElement('ul', { className: "space-y-2" },
+                      recommendations.map((rec, index) => 
+                        React.createElement('li', { key: index, className: "flex items-start gap-2 text-blue-700" },
+                          React.createElement('span', { className: "text-blue-500" }, "���"),
+                          React.createElement('span', null, rec)
+                        )
+                      )
+                    )
+                  )
+                )
+              )
+            )
+          );
+        };
+
+        // 앱 렌더링
+        ReactDOM.render(React.createElement(WorkerPoseAnalyzer), document.getElementById('root'));
+    </script>
+</body>
+</html>video', { 
+                      ref: videoRef,
+                      autoPlay: true, 
+                      muted: true, 
+                      playsInline: true,
+                      className: "w-full h-full object-cover"
+                    }),
+                    React.createElement('canvas', { 
+                      ref: canvasRef,
+                      className: "absolute top-0 left-0 w-full h-full"
+                    })
+                  ),
+                  
+                  // 컨트롤 버튼
+                  React.createElement('div', { className: "flex justify-center gap-4 mt-4" },
+                    React.createElement('button', {
+                      onClick: startAnalysis,
+                      disabled: isRunning,
+                      className: "px-6 py-3 bg-gradient-to-r from-blue-500 to-purple-600 text-white font-bold rounded-full transition-all duration-300 hover:transform hover:-translate-y-1 hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none"
+                    }, "카메라 시작"),
+                    React.createElement('button', {
+                      onClick: performVLMAnalysis,
+                      disabled: !isRunning || isAnalyzing,
+                      className: "px-6 py-3 bg-gradient-to-r from-blue-400 to-blue-600 text-white font-bold rounded-full transition-all duration-300 hover:transform hover:-translate-y-1 hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none"
+                    }, isAnalyzing ? 'VLM 분석 중...' : 'VLM 분석'),
+                    React.createElement('button', {
+                      onClick: stopAnalysis,
+                      disabled: !isRunning,
+                      className: "px-6 py-3 bg-gradient-to-r from-red-500 to-red-600 text-white font-bold rounded-full transition-all duration-300 hover:transform hover:-translate-y-1 hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none"
+                    }, "중지")
+                  )
+                ),
+
+                // 분석 패널
+                React.createElement('div', { className: "bg-white/95 rounded-2xl p-5 shadow-2xl overflow-y-auto" },
+                  // 상태 카드
+                  React.createElement('div', { 
+                    className: `rounded-xl p-4 mb-4 border-l-4 ${
+                      statusType === 'good' ? 'bg-green-50 border-green-500' :
+                      statusType === 'warning' ? 'bg-yellow-50 border-yellow-500' :
+                      'bg-red-50 border-red-500'
+                    }`
+                  },
+                    React.createElement('

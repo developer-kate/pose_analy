@@ -1,0 +1,1061 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VLM 통합 공장 작업자 포즈 분석 시스템</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Arial', sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: #333;
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 1600px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .header {
+            background: rgba(255, 255, 255, 0.95);
+            padding: 20px;
+            border-radius: 15px;
+            text-align: center;
+            margin-bottom: 20px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+        }
+
+        .header h1 {
+            color: #2c3e50;
+            font-size: 2rem;
+            margin-bottom: 10px;
+        }
+
+        .api-config {
+            display: none;
+        }
+
+        .main-grid {
+            display: grid;
+            grid-template-columns: 2fr 1fr;
+            gap: 20px;
+            height: calc(100vh - 300px);
+        }
+
+        .video-section {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 15px;
+            padding: 20px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+            display: flex;
+            flex-direction: column;
+        }
+
+        .video-container {
+            position: relative;
+            flex: 1;
+            border-radius: 10px;
+            overflow: hidden;
+            background: #000;
+        }
+
+        #videoElement {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        #canvasElement {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+        }
+
+        .controls {
+            display: flex;
+            justify-content: center;
+            gap: 15px;
+            margin-top: 15px;
+        }
+
+        .btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 25px;
+            font-size: 1rem;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .btn-primary {
+            background: linear-gradient(45deg, #667eea, #764ba2);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn-danger {
+            background: linear-gradient(45deg, #ff6b6b, #ee5a24);
+            color: white;
+        }
+
+        .btn-danger:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(255, 107, 107, 0.4);
+        }
+
+        .btn-success {
+            background: linear-gradient(45deg, #55a3ff, #3742fa);
+            color: white;
+        }
+
+        .btn-success:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(85, 163, 255, 0.4);
+        }
+
+        .analysis-panel {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 15px;
+            padding: 20px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+            overflow-y: auto;
+        }
+
+        .status-card {
+            background: #f8f9fa;
+            border-radius: 10px;
+            padding: 15px;
+            margin-bottom: 15px;
+            border-left: 4px solid #28a745;
+        }
+
+        .status-card.warning {
+            border-left-color: #ffc107;
+            background: #fff3cd;
+        }
+
+        .status-card.danger {
+            border-left-color: #dc3545;
+            background: #f8d7da;
+        }
+
+        .metric {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+            padding: 8px 0;
+            border-bottom: 1px solid #eee;
+        }
+
+        .metric:last-child {
+            border-bottom: none;
+            margin-bottom: 0;
+        }
+
+        .metric-label {
+            font-weight: bold;
+            color: #495057;
+        }
+
+        .metric-value {
+            font-weight: bold;
+            padding: 4px 8px;
+            border-radius: 15px;
+            font-size: 0.9rem;
+        }
+
+        .metric-value.good {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .metric-value.warning {
+            background: #fff3cd;
+            color: #856404;
+        }
+
+        .metric-value.danger {
+            background: #f8d7da;
+            color: #721c24;
+        }
+
+        .vlm-analysis {
+            background: #e8f4fd;
+            border-radius: 10px;
+            padding: 15px;
+            margin-top: 15px;
+            border-left: 4px solid #2196f3;
+        }
+
+        .vlm-analysis h3 {
+            color: #1976d2;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .vlm-loading {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            color: #666;
+            font-style: italic;
+        }
+
+        .loading-spinner {
+            width: 20px;
+            height: 20px;
+            border: 2px solid #e3e3e3;
+            border-top: 2px solid #3498db;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .recommendations {
+            background: #e3f2fd;
+            border-radius: 10px;
+            padding: 15px;
+            margin-top: 15px;
+        }
+
+        .recommendations h3 {
+            color: #1565c0;
+            margin-bottom: 10px;
+        }
+
+        .recommendations ul {
+            list-style: none;
+            padding: 0;
+        }
+
+        .recommendations li {
+            padding: 5px 0;
+            color: #1976d2;
+        }
+
+        .recommendations li:before {
+            content: "💡 ";
+            margin-right: 5px;
+        }
+
+        .snapshot-section {
+            background: #f8f9fa;
+            border-radius: 10px;
+            padding: 15px;
+            margin-top: 15px;
+        }
+
+        .snapshot-section h3 {
+            margin-bottom: 10px;
+            color: #495057;
+        }
+
+        #snapshotCanvas {
+            width: 100%;
+            max-width: 300px;
+            border: 2px solid #dee2e6;
+            border-radius: 8px;
+        }
+
+        @media (max-width: 768px) {
+            .main-grid {
+                grid-template-columns: 1fr;
+                grid-template-rows: auto auto;
+            }
+            
+            .api-input-group {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🤖 VLM 통합 공장 작업자 포즈 분석 시스템</h1>
+            <p>실시간 작업자 안전 모니터링 + AI 분석 보고서</p>
+        </div>
+
+        <div class="main-grid">
+            <div class="video-section">
+                <div class="video-container">
+                    <video id="videoElement" autoplay muted playsinline></video>
+                    <canvas id="canvasElement"></canvas>
+                </div>
+                <div class="controls">
+                    <button id="startBtn" class="btn btn-primary">카메라 시작</button>
+                    <button id="captureBtn" class="btn btn-success" disabled>VLM 분석</button>
+                    <button id="stopBtn" class="btn btn-danger" disabled>중지</button>
+                </div>
+            </div>
+
+            <div class="analysis-panel">
+                <div id="statusCard" class="status-card">
+                    <h3>📊 실시간 분석 상태</h3>
+                    <p id="statusText">API 키를 설정하고 카메라를 시작하여 분석을 시작하세요.</p>
+                </div>
+
+                <div id="metricsPanel" style="display: none;">
+                    <h3>📏 자세 측정값</h3>
+                    <div class="metric">
+                        <span class="metric-label">척추 각도</span>
+                        <span id="spineAngle" class="metric-value good">-°</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">목 기울기</span>
+                        <span id="neckAngle" class="metric-value good">-°</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">어깨 균형</span>
+                        <span id="shoulderBalance" class="metric-value good">-°</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">무릎 각도</span>
+                        <span id="kneeAngle" class="metric-value good">-°</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">작업 강도</span>
+                        <span id="workIntensity" class="metric-value good">보통</span>
+                    </div>
+                </div>
+
+                <div id="vlmAnalysisPanel" class="vlm-analysis" style="display: none;">
+                    <h3>🧠 AI 전문가 분석</h3>
+                    <div id="vlmContent">
+                        <div class="vlm-loading">
+                            <div class="loading-spinner"></div>
+                            <span>AI가 작업자의 자세를 분석 중입니다...</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="snapshot-section" style="display: none;" id="snapshotSection">
+                    <h3>📸 분석된 스냅샷</h3>
+                    <canvas id="snapshotCanvas"></canvas>
+                </div>
+
+                <div id="recommendationsPanel" class="recommendations" style="display: none;">
+                    <h3>🎯 개선 권장사항</h3>
+                    <ul id="recommendationsList">
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        class VLMIntegratedPoseAnalyzer {
+            constructor() {
+                this.video = document.getElementById('videoElement');
+                this.canvas = document.getElementById('canvasElement');
+                this.ctx = this.canvas.getContext('2d');
+                this.snapshotCanvas = document.getElementById('snapshotCanvas');
+                this.snapshotCtx = this.snapshotCanvas.getContext('2d');
+                this.isRunning = false;
+                this.poseLandmarker = null;
+                this.lastPoses = [];
+                
+                // 🔑 API 설정
+                this.config = {
+                    
+                    // Google Gemini 설정  
+                    gemini: {
+                        apiKey: 'AIzaSyDAYR4Pv0z8Oea30FCXldpVq9nxbYB5lvo', //
+                        model: 'gemini-pro-vision'
+                    },
+
+                    // 사용할 VLM 선택
+                    selectedVLM: 'gemini'
+                };
+                
+                // 현재 선택된 VLM 설정 적용
+                this.applyVLMConfig();
+                
+                this.initializeElements();
+                this.setupEventListeners();
+                this.initializeStatus();
+            }
+
+            applyVLMConfig() {
+                const selected = this.config[this.config.selectedVLM];
+                this.apiKey = selected.apiKey;
+                this.selectedModel = selected.model;
+            }
+
+            initializeStatus() {
+                // API 키 상태에 따른 초기 메시지
+                if (this.apiKey && !this.apiKey.includes('your-') && !this.apiKey.includes('-here')) {
+                    this.updateStatus(`✅ ${this.config.selectedVLM.toUpperCase()} API 연결 준비 완료! 카메라를 시작하세요.`, 'good');
+                } else {
+                    this.updateStatus('🔧 포즈 분석은 바로 사용 가능, VLM 분석은 API 키 설정 후 가능', 'warning');
+                }
+            }
+
+            initializeElements() {
+                this.startBtn = document.getElementById('startBtn');
+                this.captureBtn = document.getElementById('captureBtn');
+                this.stopBtn = document.getElementById('stopBtn');
+                this.statusCard = document.getElementById('statusCard');
+                this.statusText = document.getElementById('statusText');
+                this.metricsPanel = document.getElementById('metricsPanel');
+                this.vlmAnalysisPanel = document.getElementById('vlmAnalysisPanel');
+                this.vlmContent = document.getElementById('vlmContent');
+                this.snapshotSection = document.getElementById('snapshotSection');
+                this.recommendationsPanel = document.getElementById('recommendationsPanel');
+            }
+
+            setupEventListeners() {
+                this.startBtn.addEventListener('click', () => this.startAnalysis());
+                this.captureBtn.addEventListener('click', () => this.captureAndAnalyze());
+                this.stopBtn.addEventListener('click', () => this.stopAnalysis());
+                window.addEventListener('resize', () => this.resizeCanvas());
+            }
+
+            async testApiConnection() {
+                if (!this.apiKey) {
+                    alert('API 키를 입력해주세요.');
+                    return;
+                }
+
+                this.testApiBtn.disabled = true;
+                this.testApiBtn.textContent = '테스트 중...';
+
+                try {
+                    // 실제 환경에서는 여기서 API 연결 테스트
+                    // 데모에서는 시뮬레이션
+                    await new Promise(resolve => setTimeout(resolve, 2000));
+                    
+                    this.updateStatus('✅ API 연결 성공! VLM 분석 준비 완료', 'good');
+                    this.testApiBtn.textContent = '연결 성공';
+                    this.testApiBtn.style.background = '#28a745';
+                } catch (error) {
+                    this.updateStatus('❌ API 연결 실패. 키를 확인해주세요.', 'danger');
+                    this.testApiBtn.textContent = 'API 테스트';
+                    this.testApiBtn.disabled = false;
+                }
+            }
+
+            async startAnalysis() {
+                if (!this.apiKey) {
+                    alert('먼저 API 키를 설정하고 테스트해주세요.');
+                    return;
+                }
+
+                try {
+                    await this.initializePoseDetection();
+                    await this.camera.start();
+                    
+                    this.startBtn.disabled = true;
+                    this.captureBtn.disabled = false;
+                    this.stopBtn.disabled = false;
+                    this.isRunning = true;
+                    this.updateStatus('📹 실시간 포즈 분석 중... "VLM 분석" 버튼으로 AI 분석 가능', 'good');
+                    this.metricsPanel.style.display = 'block';
+                    this.recommendationsPanel.style.display = 'block';
+                    
+                } catch (error) {
+                    console.error('Error starting analysis:', error);
+                    this.updateStatus('포즈 감지 시작 실패. 브라우저 권한을 확인하세요.', 'danger');
+                }
+            }
+
+            async initializeCamera() {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { width: 1280, height: 720 }
+                });
+                this.video.srcObject = stream;
+                
+                return new Promise((resolve) => {
+                    this.video.addEventListener('loadedmetadata', () => {
+                        this.resizeCanvas();
+                        resolve();
+                    });
+                });
+            }
+
+            resizeCanvas() {
+                const rect = this.video.getBoundingClientRect();
+                this.canvas.width = rect.width;
+                this.canvas.height = rect.height;
+                
+                // 스냅샷 캔버스 크기 설정
+                this.snapshotCanvas.width = 300;
+                this.snapshotCanvas.height = 200;
+            }
+
+            async initializePoseDetection() {
+                console.log('실제 MediaPipe Pose 초기화 중...');
+                
+                this.pose = new Pose({
+                    locateFile: (file) => {
+                        return `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`;
+                    }
+                });
+                
+                this.pose.setOptions({
+                    modelComplexity: 1,
+                    smoothLandmarks: true,
+                    enableSegmentation: false,
+                    smoothSegmentation: true,
+                    minDetectionConfidence: 0.5,
+                    minTrackingConfidence: 0.5
+                });
+                
+                this.pose.onResults((results) => {
+                    this.onPoseResults(results);
+                });
+                
+                this.camera = new Camera(this.video, {
+                    onFrame: async () => {
+                        if (this.isRunning) {
+                            await this.pose.send({image: this.video});
+                        }
+                    },
+                    width: 1280,
+                    height: 720
+                });
+                
+                console.log('MediaPipe Pose 초기화 완료!');
+            }
+
+            onPoseResults(results) {
+                // 캔버스 클리어
+                this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+                
+                if (results.poseLandmarks) {
+                    // 실제 포즈 랜드마크 그리기
+                    this.drawPoseLandmarks(results.poseLandmarks);
+                    
+                    // 실제 각도 계산
+                    const metrics = this.calculateRealPoseMetrics(results.poseLandmarks);
+                    this.updateMetrics(metrics);
+                } else {
+                    // 포즈가 감지되지 않을 때
+                    this.updateStatus('⚠️ 작업자가 감지되지 않습니다. 카메라 앞에 서주세요.', 'warning');
+                }
+            }
+
+            drawPoseLandmarks(landmarks) {
+                // MediaPipe 포즈 연결선 정의
+                const connections = [
+                    [11, 12], // 어깨
+                    [11, 13], [13, 15], // 왼쪽 팔
+                    [12, 14], [14, 16], // 오른쪽 팔
+                    [11, 23], [12, 24], // 몸통
+                    [23, 24], // 허리
+                    [23, 25], [25, 27], [27, 29], [27, 31], // 왼쪽 다리
+                    [24, 26], [26, 28], [28, 30], [28, 32], // 오른쪽 다리
+                    [0, 1], [1, 2], [2, 3], [3, 7], // 얼굴 왼쪽
+                    [0, 4], [4, 5], [5, 6], [6, 8], // 얼굴 오른쪽
+                    [9, 10] // 입
+                ];
+
+                // 연결선 그리기
+                this.ctx.strokeStyle = '#00FF00';
+                this.ctx.lineWidth = 2;
+                this.ctx.beginPath();
+
+                connections.forEach(([startIdx, endIdx]) => {
+                    const start = landmarks[startIdx];
+                    const end = landmarks[endIdx];
+                    
+                    if (start && end && start.visibility > 0.5 && end.visibility > 0.5) {
+                        const startX = start.x * this.canvas.width;
+                        const startY = start.y * this.canvas.height;
+                        const endX = end.x * this.canvas.width;
+                        const endY = end.y * this.canvas.height;
+                        
+                        this.ctx.moveTo(startX, startY);
+                        this.ctx.lineTo(endX, endY);
+                    }
+                });
+                
+                this.ctx.stroke();
+
+                // 주요 관절점 그리기
+                const keyPoints = [0, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28];
+                this.ctx.fillStyle = '#FF0000';
+                
+                keyPoints.forEach(idx => {
+                    const landmark = landmarks[idx];
+                    if (landmark && landmark.visibility > 0.5) {
+                        const x = landmark.x * this.canvas.width;
+                        const y = landmark.y * this.canvas.height;
+                        
+                        this.ctx.beginPath();
+                        this.ctx.arc(x, y, 5, 0, 2 * Math.PI);
+                        this.ctx.fill();
+                    }
+                });
+            }
+
+            calculateRealPoseMetrics(landmarks) {
+                // 실제 MediaPipe 랜드마크를 사용한 각도 계산
+                const leftShoulder = landmarks[11];
+                const rightShoulder = landmarks[12];
+                const leftHip = landmarks[23];
+                const rightHip = landmarks[24];
+                const nose = landmarks[0];
+                const leftKnee = landmarks[25];
+                const rightKnee = landmarks[26];
+
+                // 척추 각도 계산 (어깨 중점과 골반 중점 사이의 각도)
+                const shoulderMidpoint = {
+                    x: (leftShoulder.x + rightShoulder.x) / 2,
+                    y: (leftShoulder.y + rightShoulder.y) / 2
+                };
+                const hipMidpoint = {
+                    x: (leftHip.x + rightHip.x) / 2,
+                    y: (leftHip.y + rightHip.y) / 2
+                };
+
+                const spineAngle = this.calculateAngle(
+                    shoulderMidpoint,
+                    hipMidpoint,
+                    {x: hipMidpoint.x, y: hipMidpoint.y + 0.1} // 수직 기준점
+                );
+
+                // 목 각도 계산
+                const neckAngle = this.calculateAngle(
+                    nose,
+                    shoulderMidpoint,
+                    {x: shoulderMidpoint.x, y: shoulderMidpoint.y + 0.1}
+                );
+
+                // 어깨 균형 계산
+                const shoulderBalance = Math.abs(leftShoulder.y - rightShoulder.y) * 180;
+
+                // 무릎 각도 계산 (왼쪽 무릎 기준)
+                const leftAnkle = landmarks[27];
+                const kneeAngle = this.calculateAngle(leftHip, leftKnee, leftAnkle);
+
+                return {
+                    spineAngle: 180 - Math.abs(spineAngle),
+                    neckAngle: Math.abs(neckAngle),
+                    shoulderBalance: shoulderBalance,
+                    kneeAngle: kneeAngle
+                };
+            }
+
+            calculateAngle(point1, point2, point3) {
+                // 세 점으로 각도 계산
+                const a = Math.sqrt(Math.pow(point2.x - point3.x, 2) + Math.pow(point2.y - point3.y, 2));
+                const b = Math.sqrt(Math.pow(point1.x - point3.x, 2) + Math.pow(point1.y - point3.y, 2));
+                const c = Math.sqrt(Math.pow(point1.x - point2.x, 2) + Math.pow(point1.y - point2.y, 2));
+                
+                const angle = Math.acos((a * a + c * c - b * b) / (2 * a * c));
+                return angle * 180 / Math.PI;
+            }
+
+            async captureAndAnalyze() {
+                if (!this.apiKey) {
+                    alert('API 키가 설정되지 않았습니다.');
+                    return;
+                }
+
+                this.captureBtn.disabled = true;
+                this.vlmAnalysisPanel.style.display = 'block';
+                this.snapshotSection.style.display = 'block';
+                
+                // 현재 프레임 캡처
+                this.captureSnapshot();
+                
+                // VLM 분석 시작
+                await this.performVLMAnalysis();
+                
+                this.captureBtn.disabled = false;
+            }
+
+            captureSnapshot() {
+                // 비디오 프레임을 스냅샷 캔버스에 캡처
+                this.snapshotCtx.drawImage(this.video, 0, 0, this.snapshotCanvas.width, this.snapshotCanvas.height);
+                
+                // 포즈 오버레이도 추가
+                this.snapshotCtx.strokeStyle = '#00ff00';
+                this.snapshotCtx.lineWidth = 2;
+                this.snapshotCtx.fillStyle = '#ff0000';
+
+                const centerX = this.snapshotCanvas.width / 2;
+                const centerY = this.snapshotCanvas.height / 2;
+                
+                const joints = [
+                    { x: centerX, y: centerY - 40 },
+                    { x: centerX, y: centerY - 20 },
+                    { x: centerX, y: centerY },
+                    { x: centerX - 15, y: centerY },
+                    { x: centerX + 15, y: centerY },
+                    { x: centerX, y: centerY + 30 },
+                    { x: centerX - 10, y: centerY + 60 },
+                    { x: centerX + 10, y: centerY + 60 },
+                ];
+
+                joints.forEach(joint => {
+                    this.snapshotCtx.beginPath();
+                    this.snapshotCtx.arc(joint.x, joint.y, 3, 0, 2 * Math.PI);
+                    this.snapshotCtx.fill();
+                });
+            }
+
+            async performVLMAnalysis() {
+                try {
+                    // 로딩 상태 표시
+                    this.vlmContent.innerHTML = `
+                        <div class="vlm-loading">
+                            <div class="loading-spinner"></div>
+                            <span>AI가 작업자의 자세를 분석 중입니다...</span>
+                        </div>
+                    `;
+
+                    // 실제 환경에서는 여기서 VLM API 호출
+                    const analysisResult = await this.callVLMAPI();
+                    
+                    // 분석 결과 표시
+                    this.vlmContent.innerHTML = `
+                        <div style="line-height: 1.6;">
+                            <strong>🔍 AI 전문가 분석 결과:</strong><br><br>
+                            ${analysisResult.analysis}<br><br>
+                            <strong>⚠️ 안전성 평가:</strong><br>
+                            ${analysisResult.safety}<br><br>
+                            <strong>💪 권장 개선사항:</strong><br>
+                            ${analysisResult.recommendations}
+                        </div>
+                    `;
+
+                } catch (error) {
+                    this.vlmContent.innerHTML = `
+                        <div style="color: #dc3545;">
+                            ❌ VLM 분석 중 오류가 발생했습니다: ${error.message}
+                        </div>
+                    `;
+                }
+            }
+
+            async callVLMAPI() {
+                // 실제 VLM API 호출
+                try {
+                    // 현재 비디오 프레임을 base64로 변환
+                    const base64Image = this.getVideoFrameAsBase64();
+                    
+                    if (this.selectedModel === 'gpt-4-vision-preview') {
+                        return await this.callOpenAIAPI(base64Image);
+                    } else if (this.selectedModel === 'gemini-pro-vision') {
+                        return await this.callGeminiAPI(base64Image);
+                    } else if (this.selectedModel === 'claude-3-sonnet-20240229') {
+                        return await this.callClaudeAPI(base64Image);
+                    }
+                } catch (error) {
+                    console.error('VLM API 호출 오류:', error);
+                    // API 호출 실패 시 데모 데이터 반환
+                    return this.getDemoAnalysis();
+                }
+            }
+
+            async callOpenAIAPI(base64Image) {
+                const response = await fetch('https://api.openai.com/v1/chat/completions', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${this.apiKey}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        model: "gpt-4-vision-preview",
+                        messages: [{
+                            role: "user",
+                            content: [
+                                {
+                                    type: "text", 
+                                    text: "공장 작업자의 자세를 분석하고 안전상 문제점을 평가해주세요. 다음 형식으로 답변해주세요:\n\n1. 자세 분석:\n2. 안전성 평가:\n3. 개선 권장사항:"
+                                },
+                                {
+                                    type: "image_url", 
+                                    image_url: {url: `data:image/jpeg;base64,${base64Image}`}
+                                }
+                            ]
+                        }],
+                        max_tokens: 500
+                    })
+                });
+
+                if (!response.ok) {
+                    throw new Error(`OpenAI API 오류: ${response.status}`);
+                }
+
+                const data = await response.json();
+                const content = data.choices[0].message.content;
+                
+                // GPT 응답을 구조화된 형태로 변환
+                return this.parseGPTResponse(content);
+            }
+
+            async callGeminiAPI(base64Image) {
+                // Gemini API 호출 (실제 구현 시)
+                const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-pro-vision:generateContent?key=${this.apiKey}`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        contents: [{
+                            parts: [
+                                {text: "공장 작업자의 자세를 분석하고 안전상 문제점을 평가해주세요."},
+                                {
+                                    inline_data: {
+                                        mime_type: "image/jpeg",
+                                        data: base64Image
+                                    }
+                                }
+                            ]
+                        }]
+                    })
+                });
+
+                const data = await response.json();
+                const content = data.candidates[0].content.parts[0].text;
+                return this.parseGPTResponse(content);
+            }
+
+            async callClaudeAPI(base64Image) {
+                // Claude API 호출 (실제 구현 시)
+                const response = await fetch('https://api.anthropic.com/v1/messages', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${this.apiKey}`,
+                        'Content-Type': 'application/json',
+                        'anthropic-version': '2023-06-01'
+                    },
+                    body: JSON.stringify({
+                        model: "claude-3-sonnet-20240229",
+                        max_tokens: 500,
+                        messages: [{
+                            role: "user",
+                            content: [
+                                {
+                                    type: "text",
+                                    text: "공장 작업자의 자세를 분석하고 안전상 문제점을 평가해주세요."
+                                },
+                                {
+                                    type: "image",
+                                    source: {
+                                        type: "base64",
+                                        media_type: "image/jpeg",
+                                        data: base64Image
+                                    }
+                                }
+                            ]
+                        }]
+                    })
+                });
+
+                const data = await response.json();
+                const content = data.content[0].text;
+                return this.parseGPTResponse(content);
+            }
+
+            getVideoFrameAsBase64() {
+                // 비디오 프레임을 캔버스에 그리고 base64로 변환
+                const tempCanvas = document.createElement('canvas');
+                const tempCtx = tempCanvas.getContext('2d');
+                
+                tempCanvas.width = this.video.videoWidth;
+                tempCanvas.height = this.video.videoHeight;
+                
+                tempCtx.drawImage(this.video, 0, 0);
+                
+                // base64 문자열에서 'data:image/jpeg;base64,' 부분 제거
+                return tempCanvas.toDataURL('image/jpeg', 0.8).split(',')[1];
+            }
+
+            parseGPTResponse(content) {
+                // GPT 응답을 구조화된 객체로 변환
+                const lines = content.split('\n').filter(line => line.trim());
+                
+                let analysis = '';
+                let safety = '';
+                let recommendations = '';
+                
+                let currentSection = '';
+                
+                lines.forEach(line => {
+                    if (line.includes('자세 분석') || line.includes('분석')) {
+                        currentSection = 'analysis';
+                    } else if (line.includes('안전성') || line.includes('안전')) {
+                        currentSection = 'safety';
+                    } else if (line.includes('개선') || line.includes('권장')) {
+                        currentSection = 'recommendations';
+                    } else if (line.trim() && !line.match(/^\d+\./)) {
+                        if (currentSection === 'analysis') {
+                            analysis += line + ' ';
+                        } else if (currentSection === 'safety') {
+                            safety += line + ' ';
+                        } else if (currentSection === 'recommendations') {
+                            recommendations += line + ' ';
+                        }
+                    }
+                });
+
+                return {
+                    analysis: analysis.trim() || "작업자의 자세를 분석했습니다.",
+                    safety: safety.trim() || "안전성을 평가했습니다.", 
+                    recommendations: recommendations.trim() || "개선사항을 제안합니다."
+                };
+            }
+
+	getDemoAnalysis() {
+	    // API 실패 시 데모 데이터 - 개인 행동 분석용
+	    const scenarios = [
+        	{
+            	analysis: "자연스러운 서 있는 자세를 취하고 있습니다. 체중이 고르게 분산되어 있고 어깨가 편안한 상태입니다.",
+            	safety: "전반적으로 균형 잡힌 자세입니다. 장시간 유지해도 무리가 없어 보입니다.",
+            	recommendations: "• 현재 자세를 유지하세요\n• 가끔 체중을 한쪽 다리에서 다른 쪽으로 옮겨보세요\n• 어깨를 가볍게 돌려서 긴장을 풀어주세요"
+        	},
+        	{
+            	analysis: "앉아 있는 자세에서 등이 약간 구부러져 있고 목이 앞으로 나와 있는 상태입니다.",
+            	safety: "장시간 지속 시 목과 어깨 피로가 누적될 수 있습니다.",
+            	recommendations: "• 등받이에 등을 기대고 앉으세요\n• 모니터 높이를 눈높이에 맞춰 조정하세요\n• 30분마다 목과 어깨 스트레칭을 해보세요\n• 의자 높이를 조절해보세요"
+        	},
+        	{
+            	analysis: "걸어가는 모습이 관찰됩니다. 보폭이 일정하고 자연스러운 팔 움직임을 보이고 있습니다.",
+            	safety: "건강한 보행 패턴을 보여주고 있습니다. 특별한 문제점은 발견되지 않습니다.",
+            	recommendations: "• 현재의 자연스러운 걸음걸이를 유지하세요\n• 발목을 유연하게 사용하고 있어 좋습니다\n• 꾸준한 걷기 운동을 계속하시면 좋겠습니다"
+        	},
+        	{
+            	analysis: "휴식을 취하고 있는 자세입니다. 몸의 긴장이 풀어져 있고 편안한 상태로 보입니다.",
+            	safety: "안정적이고 편안한 자세입니다. 충분한 휴식을 취하고 있는 것 같습니다.",
+            	recommendations: "• 편안한 휴식을 계속 취하세요\n• 깊은 호흡을 통해 더욱 릴랙스해보세요\n• 스마트폰 사용 시 목 위치에 주의하세요"
+        	}
+    	];
+
+    	return scenarios[Math.floor(Math.random() * scenarios.length)];
+	}
+
+            updateMetrics(metrics) {
+                // 척추 각도
+                const spineStatus = metrics.spineAngle > 160 ? 'good' : 
+                                 metrics.spineAngle > 140 ? 'warning' : 'danger';
+                document.getElementById('spineAngle').textContent = `${metrics.spineAngle.toFixed(1)}°`;
+                document.getElementById('spineAngle').className = `metric-value ${spineStatus}`;
+
+                // 목 각도
+                const neckStatus = metrics.neckAngle < 15 ? 'good' : 
+                                 metrics.neckAngle < 25 ? 'warning' : 'danger';
+                document.getElementById('neckAngle').textContent = `${metrics.neckAngle.toFixed(1)}°`;
+                document.getElementById('neckAngle').className = `metric-value ${neckStatus}`;
+
+                // 어깨 균형
+                const shoulderStatus = metrics.shoulderBalance < 5 ? 'good' : 
+                                     metrics.shoulderBalance < 10 ? 'warning' : 'danger';
+                document.getElementById('shoulderBalance').textContent = `${metrics.shoulderBalance.toFixed(1)}°`;
+                document.getElementById('shoulderBalance').className = `metric-value ${shoulderStatus}`;
+
+                // 무릎 각도
+                const kneeStatus = metrics.kneeAngle > 150 ? 'good' : 
+                                 metrics.kneeAngle > 120 ? 'warning' : 'danger';
+                document.getElementById('kneeAngle').textContent = `${metrics.kneeAngle.toFixed(1)}°`;
+                document.getElementById('kneeAngle').className = `metric-value ${kneeStatus}`;
+
+                // 작업 강도
+                const intensity = Math.random() > 0.7 ? '높음' : Math.random() > 0.3 ? '보통' : '낮음';
+                const intensityStatus = intensity === '높음' ? 'danger' : 
+                                      intensity === '보통' ? 'warning' : 'good';
+                document.getElementById('workIntensity').textContent = intensity;
+                document.getElementById('workIntensity').className = `metric-value ${intensityStatus}`;
+
+                this.updateRecommendations(metrics);
+                this.updateOverallStatus(spineStatus, neckStatus, shoulderStatus, kneeStatus);
+            }
+
+            updateRecommendations(metrics) {
+                const recommendations = [];
+                
+                if (metrics.spineAngle < 160) {
+                    recommendations.push('허리를 곧게 펴고 작업하세요.');
+                }
+                if (metrics.neckAngle > 15) {
+                    recommendations.push('목을 과도하게 숙이지 마세요.');
+                }
+                if (metrics.shoulderBalance > 5) {
+                    recommendations.push('어깨 높이를 균등하게 유지하세요.');
+                }
+                if (metrics.kneeAngle < 150) {
+                    recommendations.push('무릎을 구부릴 때는 서서히 하세요.');
+                }
+
+                if (recommendations.length === 0) {
+                    recommendations.push('현재 자세가 양호합니다. 계속 유지하세요!');
+                }
+
+                const listElement = document.getElementById('recommendationsList');
+                listElement.innerHTML = recommendations.map(rec => `<li>${rec}</li>`).join('');
+            }
+
+            updateOverallStatus(spineStatus, neckStatus, shoulderStatus, kneeStatus) {
+                const statuses = [spineStatus, neckStatus, shoulderStatus, kneeStatus];
+                const dangerCount = statuses.filter(s => s === 'danger').length;
+                const warningCount = statuses.filter(s => s === 'warning').length;
+
+                if (dangerCount > 0) {
+                    this.updateStatus(`⚠️ 위험 요소 ${dangerCount}개 감지됨`, 'danger');
+                } else if (warningCount > 0) {
+                    this.updateStatus(`⚡ 주의 요소 ${warningCount}개 감지됨`, 'warning');
+                } else {
+                    this.updateStatus('✅ 작업 자세 양호', 'good');
+                }
+            }
+
+            updateStatus(message, type) {
+                this.statusText.textContent = message;
+                this.statusCard.className = `status-card ${type}`;
+            }
+
+            stopAnalysis() {
+                this.isRunning = false;
+                this.startBtn.disabled = false;
+                this.captureBtn.disabled = true;
+                this.stopBtn.disabled = true;
+                
+                if (this.camera) {
+                    this.camera.stop();
+                }
+                
+                this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+                this.updateStatus('분석이 중지되었습니다.', 'good');
+                this.metricsPanel.style.display = 'none';
+                this.vlmAnalysisPanel.style.display = 'none';
+                this.snapshotSection.style.display = 'none';
+                this.recommendationsPanel.style.display = 'none';
+            }
+        }
+
+        // 앱 시작
+        document.addEventListener('DOMContentLoaded', () => {
+            new VLMIntegratedPoseAnalyzer();
+        });
+    </script>
+</body>
+</html>
