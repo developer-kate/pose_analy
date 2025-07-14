@@ -30,15 +30,16 @@
             padding-bottom: 60px; /* 하단 패널 가림 방지 */
             position: relative;
         }
+        /* 로고 크기 및 위치 개선, 헤더와 높이 맞춤 */
         .logo-absolute {
             position: absolute;
-            top: 100;
-            left: 100;
+            top: 32px;
+            left: 1px;
             z-index: 10;
-            width: 100px; /* 헤더 margin-left와 동일하게 */
-            height: 70px; /* 헤더 높이와 동일하게 */
+            width: 140px;
+            height: 80px; /* 헤더 높이와 맞춤 */
             display: flex;
-            align-items: stretch;
+            align-items: center;
             justify-content: flex-start;
             background: none;
         }
@@ -48,14 +49,39 @@
             object-fit: contain;
             background: none;
         }
+
+        /* 반응형: 모바일에서 로고와 헤더 크기 축소 */
+        @media (max-width: 768px) {
+            .logo-absolute {
+                top: 10px;
+                left: 10px;
+                width: 70px;
+                height: 40px;
+            }
+            .header {
+                margin-left: 80px;
+                margin-right: 80px;
+                margin-top: 5px;
+                height: 48px;
+                font-size: 1rem;
+            }
+            .header-texts h1 {
+                font-size: 1rem;
+            }
+            .header-texts p {
+                font-size: 0.8rem;
+            }
+        }
+
         .header {
             background: rgba(255, 255, 255, 0.95);
-            padding: 10px 24px;
+            padding: 10px 24px;      /* 좌우/상하 여백 */
             border-radius: 15px;
             text-align: left;
             margin-bottom: 20px;
             box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
-            margin-left: 120px; /* 로고 공간만큼 왼쪽 여백 */
+            margin-left: 200px; /* 로고 공간만큼 왼쪽 여백 */
+            margin-right: 200px;
             margin-top: 10px;
             height: 70px;
             display: flex;
@@ -122,9 +148,9 @@
             left: 0;
             width: 100%;
             height: 100%;
-            object-fit: cover;
+            /*object-fit: cover;*/
             z-index: 1;
-            display: block;
+            /*display: block;*/
         }
 
         #canvasElement {
@@ -918,7 +944,7 @@
                 ];
 
                 this.ctx.strokeStyle = '#00FF00';
-                this.ctx.lineWidth = 2;
+                this.ctx.lineWidth = 15;
                 this.ctx.beginPath();
 
                 connections.forEach(([startIdx, endIdx]) => {
@@ -975,53 +1001,38 @@
                     y: (leftShoulder.y + rightShoulder.y) / 2
                 };
 
-                // 척추 각도 계산 개선
-                let spineAngle = 165; // 기본값
+                // 척추 각도 계산 (y축 기준, 180에 가까울수록 곧음)
+                let spineAngle = 180;
                 if (leftHip && rightHip && leftHip.visibility > 0.5 && rightHip.visibility > 0.5) {
                     const hipMidpoint = {
                         x: (leftHip.x + rightHip.x) / 2,
                         y: (leftHip.y + rightHip.y) / 2
                     };
-                    
-                    // 어깨-골반 벡터와 수직선의 각도
                     const dx = shoulderMidpoint.x - hipMidpoint.x;
                     const dy = shoulderMidpoint.y - hipMidpoint.y;
-                    const angleRad = Math.atan2(Math.abs(dx), Math.abs(dy));
-                    spineAngle = 180 - (angleRad * 180 / Math.PI);
-                    spineAngle = Math.max(120, Math.min(180, spineAngle));
-                } else {
-                    // 앉은 자세일 때: 목-어깨 각도로 추정
-                    const dx = nose.x - shoulderMidpoint.x;
-                    const dy = nose.y - shoulderMidpoint.y;
-                    const angleRad = Math.atan2(Math.abs(dx), Math.abs(dy));
-                    spineAngle = 170 - (angleRad * 180 / Math.PI) * 2; // 더 민감하게
-                    spineAngle = Math.max(130, Math.min(180, spineAngle));
+                    const angleRad = Math.atan2(dy, dx);
+                    spineAngle = Math.abs(angleRad * 180 / Math.PI);
+                    spineAngle = 180 - spineAngle;
+                    spineAngle = Math.max(150, Math.min(180, spineAngle));
                 }
 
-                // 목 각도 계산 개선 (전방 돌출)
+                // 목 각도 (x/y 비율 완화)
+                let neckAngle = 0;
                 const neckDx = nose.x - shoulderMidpoint.x;
                 const neckDy = nose.y - shoulderMidpoint.y;
-                let neckAngle = 0;
-                
-                if (neckDy < 0) { // 머리가 어깨보다 위에 있을 때만
-                    const neckAngleRad = Math.atan2(Math.abs(neckDx), Math.abs(neckDy));
-                    neckAngle = neckAngleRad * 180 / Math.PI;
-                    // 앞으로 나온 정도에 따라 추가 가중치
-                    if (neckDx > 0) neckAngle *= 1.5; // 오른쪽으로 나온 경우
+                if (neckDy < 0) {
+                    const neckAngleRad = Math.atan2(neckDx, Math.abs(neckDy));
+                    neckAngle = Math.abs(neckAngleRad * 180 / Math.PI);
+                    neckAngle = Math.max(0, Math.min(40, neckAngle));
                 }
-                neckAngle = Math.max(0, Math.min(60, neckAngle));
 
-                // 어깨 균형 계산 개선
+                // 어깨 균형 (픽셀 차이, 0~5 정도가 정상)
                 const shoulderHeightDiff = Math.abs(leftShoulder.y - rightShoulder.y);
-                const shoulderWidth = Math.abs(leftShoulder.x - rightShoulder.x);
-                let shoulderBalance = 0;
-                if (shoulderWidth > 0) {
-                    shoulderBalance = (shoulderHeightDiff / shoulderWidth) * 100; // 더 민감하게
-                    shoulderBalance = Math.max(0, Math.min(30, shoulderBalance));
-                }
+                let shoulderBalance = shoulderHeightDiff * 100;
+                shoulderBalance = Math.max(0, Math.min(20, shoulderBalance));
 
-                // 무릎 각도 계산
-                let kneeAngle = 160; // 기본값
+                // 무릎 각도는 기존대로
+                let kneeAngle = 160;
                 if (leftHip && leftKnee && leftAnkle && 
                     leftHip.visibility > 0.5 && leftKnee.visibility > 0.5 && leftAnkle.visibility > 0.5) {
                     kneeAngle = this.calculateAngle(leftHip, leftKnee, leftAnkle);
@@ -1034,7 +1045,7 @@
                     shoulderBalance: Math.round(shoulderBalance * 10) / 10,
                     kneeAngle: Math.round(kneeAngle * 10) / 10
                 };
-            }
+                }
 
             calculateAngle(point1, point2, point3) {
                 const a = Math.sqrt(Math.pow(point2.x - point3.x, 2) + Math.pow(point2.y - point3.y, 2));
@@ -1046,29 +1057,29 @@
             }
 
             updateMetrics(metrics) {
-                const spineStatus = metrics.spineAngle > 160 ? 'good' :
-                                 metrics.spineAngle > 140 ? 'warning' : 'danger';
+                const spineStatus = metrics.spineAngle > 170 ? 'good' :
+                                metrics.spineAngle > 160 ? 'warning' : 'danger';
                 document.getElementById('spineAngle').textContent = `${metrics.spineAngle.toFixed(1)}°`;
                 document.getElementById('spineAngle').className = `metric-value ${spineStatus}`;
 
-                const neckStatus = metrics.neckAngle < 15 ? 'good' :
-                                 metrics.neckAngle < 25 ? 'warning' : 'danger';
+                const neckStatus = metrics.neckAngle < 10 ? 'good' :
+                                metrics.neckAngle < 25 ? 'warning' : 'danger';
                 document.getElementById('neckAngle').textContent = `${metrics.neckAngle.toFixed(1)}°`;
                 document.getElementById('neckAngle').className = `metric-value ${neckStatus}`;
 
-                const shoulderStatus = metrics.shoulderBalance < 5 ? 'good' :
-                                     metrics.shoulderBalance < 10 ? 'warning' : 'danger';
+                const shoulderStatus = metrics.shoulderBalance < 3 ? 'good' :
+                                    metrics.shoulderBalance < 8 ? 'warning' : 'danger';
                 document.getElementById('shoulderBalance').textContent = `${metrics.shoulderBalance.toFixed(1)}°`;
                 document.getElementById('shoulderBalance').className = `metric-value ${shoulderStatus}`;
 
                 const kneeStatus = metrics.kneeAngle > 150 ? 'good' :
-                                 metrics.kneeAngle > 120 ? 'warning' : 'danger';
+                                metrics.kneeAngle > 120 ? 'warning' : 'danger';
                 document.getElementById('kneeAngle').textContent = `${metrics.kneeAngle.toFixed(1)}°`;
                 document.getElementById('kneeAngle').className = `metric-value ${kneeStatus}`;
 
                 const intensity = Math.random() > 0.7 ? '높음' : Math.random() > 0.3 ? '보통' : '낮음';
                 const intensityStatus = intensity === '높음' ? 'danger' :
-                                      intensity === '보통' ? 'warning' : 'good';
+                                    intensity === '보통' ? 'warning' : 'good';
                 document.getElementById('workIntensity').textContent = intensity;
                 document.getElementById('workIntensity').className = `metric-value ${intensityStatus}`;
 
@@ -1496,8 +1507,8 @@
             async analyzeVideoEvents() {
                 // 대표 프레임 시퀀스 추출 (예: 10초 간격, 최대 20장)
                 const duration = this.video.duration;
-                const interval = 10; // 10초 간격
-                const maxFrames = 20;
+                const interval = 2; // 10초 간격
+                const maxFrames = Math.ceil(duration / interval);
                 const frames = [];
                 const times = [];
                 const tempCanvas = document.createElement('canvas');
@@ -1561,18 +1572,29 @@
             }
 
             resizeCanvas() {
-                // video와 canvas의 크기를 동기화
                 if (this.video && this.canvas) {
-                    this.canvas.width = this.video.videoWidth || this.video.width || this.canvas.width;
-                    this.canvas.height = this.video.videoHeight || this.video.height || this.canvas.height;
-                    this.canvas.style.width = '100%';
-                    this.canvas.style.height = '100%';
+                    // 비디오의 실제 크기와 동기화
+                    const vw = this.video.videoWidth || this.video.width;
+                    const vh = this.video.videoHeight || this.video.height;
+                    if (vw && vh) {
+                        this.canvas.width = vw;
+                        this.canvas.height = vh;
+                        this.canvas.style.width = '100%';
+                        this.canvas.style.height = '100%';
+                    }
                 }
             }
         }
 
         document.addEventListener('DOMContentLoaded', () => {
-            new VLMIntegratedPoseAnalyzer();
+            const analyzer = new VLMIntegratedPoseAnalyzer();
+            analyzer.resizeCanvas();
+            analyzer.video.addEventListener('loadedmetadata', () => {
+                analyzer.resizeCanvas();
+            });
+            window.addEventListener('resize', () => {
+                analyzer.resizeCanvas();
+            });
         });
     </script>
 </body>
